@@ -27,3 +27,16 @@ Enquanto isso, ela continua pelo motor OpenRGB.
 2. **Ler antes de escrever.** Todo driver primeiro identifica a peça e só escreve depois de confirmar que é ela.
 3. **SMBus com lista fixa de endereços.** Nunca varrer o barramento escrevendo: os chips de configuração das memórias (SPD) ficam nele.
 4. **Sempre com volta.** Qualquer peça pode ser devolvida ao motor OpenRGB ou desligada do programa pela interface.
+
+## Ideias anotadas para as próximas versões
+
+### Transição gradual por horário ("nascer e pôr do sol")
+
+Hoje a automação por horário troca de perfil de uma vez. A ideia é a cor e o brilho mudarem aos poucos ao longo do dia:
+
+- **22:00** — fica amarelo, num tom aconchegante.
+- **22:00 → 00:00** — vai apagando aos poucos, até desligar à meia-noite.
+- **06:00 → 07:00** — vai acendendo aos poucos.
+- **07:00** — brilho no máximo, na cor selecionada.
+
+Como fazer: cada regra de horário ganha uma opção "transição até HH:mm". Entre os dois pontos, o programa mistura cor e brilho do perfil anterior com os do próximo, atualizando a cada minuto (ou menos). Os horários e as cores de cada ponto ficam configuráveis na aba Automações.
