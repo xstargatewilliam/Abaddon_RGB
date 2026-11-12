@@ -616,7 +616,7 @@ internal sealed class NeonSlider : Control
     protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
 }
 
-/// <summary>Ilustração do gabinete com as luzes pintadas na cor atual.</summary>
+/// <summary>Ilustração do gabinete (setup branco) com as luzes pintadas na cor atual.</summary>
 internal sealed class PcPreview : Control
 {
     private Color _light = Color.White;
@@ -648,18 +648,34 @@ internal sealed class PcPreview : Control
         var side = Math.Min(Width, Height);
         var target = new Rectangle((Width - side) / 2, (Height - side) / 2, side, side);
 
-        // As luzes da ilustração são brancas: multiplicar pela cor pinta só o que brilha.
-        // Um mínimo de 14% mantém o gabinete visível mesmo com tudo apagado.
         var k = _brightness / 100f;
-        float Channel(int value) => 0.14f + 0.86f * (value / 255f) * k;
 
-        using var attributes = new ImageAttributes();
-        attributes.SetColorMatrix(new ColorMatrix
+        // Camada 1: o gabinete branco, levemente banhado pela cor (como a luz refletindo nele).
+        float Ambient(int value) => 0.62f + 0.24f * (value / 255f) * k;
+        using (var attributes = new ImageAttributes())
         {
-            Matrix00 = Channel(_light.R),
-            Matrix11 = Channel(_light.G),
-            Matrix22 = Channel(_light.B),
-        });
-        g.DrawImage(image, target, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+            attributes.SetColorMatrix(new ColorMatrix
+            {
+                Matrix00 = Ambient(_light.R),
+                Matrix11 = Ambient(_light.G),
+                Matrix22 = Ambient(_light.B),
+            });
+            g.DrawImage(image, target, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+        }
+
+        // Camada 2: só as luzes (anéis das fans, cooler e memórias), na cor e no brilho atuais.
+        var lights = Ui.Asset("gabinete_luz.png");
+        if (lights is null || k <= 0f) return;
+        using (var attributes = new ImageAttributes())
+        {
+            attributes.SetColorMatrix(new ColorMatrix
+            {
+                Matrix00 = _light.R / 255f,
+                Matrix11 = _light.G / 255f,
+                Matrix22 = _light.B / 255f,
+                Matrix33 = k,
+            });
+            g.DrawImage(lights, target, 0, 0, lights.Width, lights.Height, GraphicsUnit.Pixel, attributes);
+        }
     }
 }
