@@ -424,7 +424,7 @@ internal sealed partial class MainForm
 
         foreach (var device in devices)
         {
-            var node = new TreeNode(DescribeTarget(device.Name, "", device.Name))
+            var node = new TreeNode(DescribeTarget(device.Name, "", device.Name, device.StableId))
             {
                 Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId },
                 ToolTipText = $"{device.LedCount} LEDs, motor {EngineName(device.EngineId)}",
@@ -437,7 +437,7 @@ internal sealed partial class MainForm
             {
                 foreach (var zone in device.Zones)
                 {
-                    var child = new TreeNode(DescribeTarget(device.Name, zone.Name, zone.Name))
+                    var child = new TreeNode(DescribeTarget(device.Name, zone.Name, zone.Name, device.StableId))
                     {
                         Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name },
                         ToolTipText = $"{zone.LedCount} LEDs",
@@ -468,13 +468,13 @@ internal sealed partial class MainForm
         string.Equals(tag.Device, device, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(tag.Zone, zone, StringComparison.OrdinalIgnoreCase);
 
-    private string DescribeTarget(string device, string zone, string label)
+    private string DescribeTarget(string device, string zone, string label, string stableId)
     {
         var text = label;
-        var own = _config.Overrides.FirstOrDefault(o => o.SameTarget(device, zone));
+        var own = _config.Overrides.FirstOrDefault(o => o.SameTarget(device, zone, stableId));
         if (own is not null) text += "  —  cor própria " + own.Color;
-        if (zone.Length > 0 && IsSwapped(device, zone)) text += "  —  vermelho/verde invertidos";
-        if (zone.Length == 0 && _config.IsDisabled(device)) text += "  —  não controlada";
+        if (zone.Length > 0 && IsSwapped(device, zone, stableId)) text += "  —  vermelho/verde invertidos";
+        if (zone.Length == 0 && _config.IsDisabled(device, stableId)) text += "  —  não controlada";
         return text;
     }
 
@@ -534,8 +534,8 @@ internal sealed partial class MainForm
         await ApplyAsync();
     }
 
-    private bool IsSwapped(string device, string zone) =>
-        _config.Corrections.Any(c => c.Matches(device, zone) && !string.Equals(c.Order, ColorOrder.Default, StringComparison.OrdinalIgnoreCase));
+    private bool IsSwapped(string device, string zone, string stableId) =>
+        _config.Corrections.Any(c => c.Matches(device, zone, stableId) && !string.Equals(c.Order, ColorOrder.Default, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Liga ou desliga a troca de vermelho com verde na zona selecionada
@@ -546,7 +546,9 @@ internal sealed partial class MainForm
         var tag = SelectedTarget();
         if (tag is null) return;
 
-        var device = _controller.Devices.FirstOrDefault(d => string.Equals(d.Name, tag.Device, StringComparison.OrdinalIgnoreCase));
+        var device = _controller.Devices.FirstOrDefault(d => tag.DeviceId.Length > 0
+            ? string.Equals(d.StableId, tag.DeviceId, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(d.Name, tag.Device, StringComparison.OrdinalIgnoreCase));
         if (device is null) return;
 
         var zones = tag.Zone.Length > 0
@@ -555,12 +557,14 @@ internal sealed partial class MainForm
         if (zones.Count == 0) return;
 
         // Se alguma zona escolhida já está invertida, o clique desfaz; senão, inverte todas.
-        var undo = zones.Any(z => IsSwapped(tag.Device, z));
+        var undo = zones.Any(z => IsSwapped(tag.Device, z, tag.DeviceId));
         foreach (var zone in zones)
         {
-            _config.Corrections.RemoveAll(c => c.Matches(tag.Device, zone));
+            // Só remove correções desta peça e desta zona exata (as regras gerais por nome parcial ficam).
+            _config.Corrections.RemoveAll(c => c.Matches(tag.Device, zone, tag.DeviceId) &&
+                                               string.Equals(c.Zone, zone, StringComparison.OrdinalIgnoreCase));
             if (!undo)
-                _config.Corrections.Add(new ZoneCorrection { Device = tag.Device, Zone = zone, Order = "GRB" });
+                _config.Corrections.Add(new ZoneCorrection { Device = tag.Device, DeviceId = tag.DeviceId, Zone = zone, Order = "GRB" });
         }
 
         var where = tag.Zone.Length > 0 ? $"{tag.Device} › {tag.Zone}" : tag.Device;
