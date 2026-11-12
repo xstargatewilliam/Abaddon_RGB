@@ -203,7 +203,17 @@ public sealed class AppConfig
         {
             Normalize();
             Directory.CreateDirectory(Folder);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+            // Nunca deixe um config.json parcialmente gravado após falha ou desligamento.
+            var temp = FilePath + ".tmp";
+            try
+            {
+                File.WriteAllText(temp, JsonSerializer.Serialize(this, JsonOptions));
+                File.Move(temp, FilePath, overwrite: true);
+            }
+            finally
+            {
+                try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            }
         }
     }
 

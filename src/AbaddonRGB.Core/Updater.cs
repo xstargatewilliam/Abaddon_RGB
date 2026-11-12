@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace AbaddonRGB.Core;
 
 /// <summary>Uma versão publicada nas releases do GitHub.</summary>
-public sealed record UpdateInfo(Version Version, string Tag, string DownloadUrl);
+public sealed record UpdateInfo(Version Version, string Tag, string DownloadUrl, string ChecksumUrl = "");
 
 /// <summary>
 /// Atualização automática: procura a release mais recente no GitHub, baixa o novo
@@ -16,6 +16,7 @@ public static class Updater
     public const string Owner = "xstargatewilliam";
     public const string Repo = "Abaddon_RGB";
     public const string AssetName = "AbaddonRGB.exe";
+    public const string ChecksumAssetName = "AbaddonRGB.exe.sha256";
 
     private const string OldSuffix = ".old";
 
@@ -63,15 +64,20 @@ public static class Updater
         if (!TryParseTag(tag, out var version)) return null;
         if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
 
+        string? exe = null;
+        string? checksum = null;
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
             var download = asset.TryGetProperty("browser_download_url", out var d) ? d.GetString() : null;
-            if (string.Equals(name, AssetName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(download))
-                return new UpdateInfo(version, tag, download!);
+            if (string.IsNullOrWhiteSpace(download)) continue;
+            if (string.Equals(name, AssetName, StringComparison.OrdinalIgnoreCase)) exe = download;
+            if (string.Equals(name, ChecksumAssetName, StringComparison.OrdinalIgnoreCase)) checksum = download;
         }
 
-        return null;
+        // Releases antigas sem hash verificável não são instaladas automaticamente.
+        return exe is not null && checksum is not null
+            ? new UpdateInfo(version, tag, exe, checksum) : null;
     }
 
     /// <summary>Aceita "v0.2.0", "V0.2", "0.2.1" etc.</summary>
@@ -106,8 +112,30 @@ public static class Updater
             await input.CopyToAsync(output, cancellationToken);
         }
 
-        ValidateExecutable(target);
-        return target;
+        try
+        {
+            ValidateExecutable(target);
+            if (string.IsNullOrWhiteSpace(update.ChecksumUrl))
+                throw new InvalidDataException("A release não tem checksum SHA-256.");
+
+            var expectedText = (await Http.GetStringAsync(update.ChecksumUrl, cancellationToken)).Trim();
+            var expectedHash = expectedText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault() ?? "";
+            if (expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit))
+                throw new InvalidDataException("Checksum SHA-256 inválido na release.");
+
+            await using var stream = File.OpenRead(target);
+            var actualHash = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken));
+            if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("SHA-256 do executável não confere com a release.");
+
+            return target;
+        }
+        catch
+        {
+            try { File.Delete(target); } catch { }
+            throw;
+        }
     }
 
     /// <summary>Um .exe do Windows começa com "MZ" e o nosso tem vários megabytes.</summary>
@@ -144,13 +172,28 @@ public static class Updater
             throw;
         }
 
-        Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = currentExe,
-            Arguments = arguments,
-            UseShellExecute = false,
-            WorkingDirectory = Path.GetDirectoryName(currentExe) ?? "",
-        });
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = currentExe,
+                Arguments = arguments,
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(currentExe) ?? "",
+            });
+            if (process is null) throw new InvalidOperationException("Falha ao iniciar a nova versão.");
+        }
+        catch
+        {
+            // Se a nova versão nem iniciar, devolve o executável anterior.
+            try
+            {
+                File.Delete(currentExe);
+                File.Move(oldPath, currentExe);
+            }
+            catch { }
+            throw;
+        }
     }
 
     /// <summary>Apaga a versão antiga que sobrou da última atualização.</summary>

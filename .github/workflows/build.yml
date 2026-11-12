@@ -30,10 +30,18 @@ jobs:
           -p:EnableCompressionInSingleFile=true
           -o publish
 
+      - name: Gerar checksum SHA-256 do executável
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash publish/AbaddonRGB.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AbaddonRGB.exe" | Set-Content -Encoding ascii publish/AbaddonRGB.exe.sha256
+
       - uses: actions/upload-artifact@v4
         with:
           name: AbaddonRGB-win-x64
-          path: publish/AbaddonRGB.exe
+          path: |
+            publish/AbaddonRGB.exe
+            publish/AbaddonRGB.exe.sha256
 
       - name: Ler a versão do projeto
         id: version
@@ -51,5 +59,7 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Abaddon RGB ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
-          files: publish/AbaddonRGB.exe
+          files: |
+            publish/AbaddonRGB.exe
+            publish/AbaddonRGB.exe.sha256
           generate_release_notes: true
