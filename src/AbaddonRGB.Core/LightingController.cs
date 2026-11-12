@@ -48,14 +48,22 @@ public sealed class LightingController : IDisposable
             error = null;
             foreach (var engine in _engines)
             {
-                if (engine.IsConnected) continue;
+                if (engine.IsConnected)
+                {
+                    _errors[engine.Id] = null;
+                    continue;
+                }
 
-                var ok = engine.TryConnect(out var engineError);
+                bool ok;
+                string? engineError;
+                try { ok = engine.TryConnect(out engineError); }
+                catch (Exception ex) { ok = false; engineError = ex.Message; }
                 var changed = !_errors.TryGetValue(engine.Id, out var previous) || previous != engineError;
                 _errors[engine.Id] = ok ? null : engineError;
 
                 if (ok) Log.Info($"Motor {engine.DisplayName}: conectado.");
-                else if (changed && engine.Id == OpenRgbEngine.EngineId) Log.Warn($"Motor {engine.DisplayName}: {engineError}");
+                else if (changed && engine.Id == OpenRgbEngine.EngineId)
+                    Log.Warn($"Motor {engine.DisplayName}: {engineError}");
 
                 if (!ok && engine.Id == OpenRgbEngine.EngineId) error = engineError;
             }
@@ -92,10 +100,34 @@ public sealed class LightingController : IDisposable
             }
         }
 
-        if (found.Count != _devices.Count || !found.Select(d => d.Name).SequenceEqual(_devices.Select(d => d.Name)))
-            Log.Info("Peças detectadas: " + (found.Count == 0 ? "nenhuma" : string.Join("; ", found.Select(d => $"{d.Name} [{d.LedCount} LEDs]"))));
+        // Um único motor pode escrever em cada dispositivo físico. Quando ambos
+        // reconhecem o mesmo ID, o motor nativo tem prioridade.
+        var unique = found.GroupBy(d => string.IsNullOrWhiteSpace(d.StableId)
+                ? $"{d.EngineId}:{d.Index}" : d.StableId, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderBy(d => d.EngineId == NativeEngine.EngineId ? 0 : 1).First())
+            .ToList();
 
-        _devices = found;
+        if (unique.Count != found.Count)
+            Log.Info($"{found.Count - unique.Count} detecção(ões) duplicada(s): controle atribuído a um único motor.");
+
+        // Converte entradas antigas por nome sem arriscar associar duas peças homônimas.
+        var migrated = false;
+        foreach (var group in unique.GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+            if (group.Count() == 1)
+                migrated |= Config.BindDeviceIdentity(group.Key, group.First().StableId);
+        if (migrated)
+        {
+            try { Config.Save(); }
+            catch (Exception ex) { Log.Warn("Não foi possível salvar a migração dos IDs: " + ex.Message); }
+        }
+
+        static string Signature(LightDevice d) =>
+            $"{d.EngineId}|{d.Index}|{d.StableId}|{d.Name}|{d.LedCount}|{d.Zones.Count}";
+        if (!unique.Select(Signature).SequenceEqual(_devices.Select(Signature)))
+            Log.Info("Peças detectadas: " + (unique.Count == 0 ? "nenhuma" :
+                string.Join("; ", unique.Select(d => $"{d.Name} [{d.LedCount} LEDs, {d.StableId}]"))));
+
+        _devices = unique;
     }
 
     public IReadOnlyList<EngineStatus> GetEngineStatus()
@@ -130,7 +162,9 @@ public sealed class LightingController : IDisposable
             TargetColor? top = null;
 
             var targetDevice = Config.Temperature.TargetDevice;
-            var temperatureEverywhere = string.IsNullOrWhiteSpace(targetDevice);
+            var targetDeviceId = Config.Temperature.TargetDeviceId;
+            var temperatureEverywhere = string.IsNullOrWhiteSpace(targetDevice) &&
+                                        string.IsNullOrWhiteSpace(targetDeviceId);
             if (temperatureColor is not null)
             {
                 if (temperatureEverywhere)
@@ -143,6 +177,7 @@ public sealed class LightingController : IDisposable
                     top = new TargetColor
                     {
                         Device = targetDevice,
+                        DeviceId = targetDeviceId,
                         Zone = Config.Temperature.TargetZone,
                         Color = temperatureColor.Value.ToHex(),
                     };
@@ -158,10 +193,12 @@ public sealed class LightingController : IDisposable
                 if (engine is null) continue;
 
                 if (onlyTemperatureTarget && !temperatureEverywhere &&
-                    !string.Equals(device.Name, targetDevice, StringComparison.OrdinalIgnoreCase))
+                    !(string.IsNullOrWhiteSpace(targetDeviceId)
+                        ? string.Equals(device.Name, targetDevice, StringComparison.OrdinalIgnoreCase)
+                        : string.Equals(device.StableId, targetDeviceId, StringComparison.OrdinalIgnoreCase)))
                     continue;
 
-                if (Config.IsDisabled(device.Name))
+                if (Config.IsDisabled(device.Name, device.StableId))
                 {
                     results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "não controlada", Skipped: true));
                     continue;

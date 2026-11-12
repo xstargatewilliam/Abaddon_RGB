@@ -4,7 +4,7 @@ namespace AbaddonRGB.Core.Engines;
 public sealed record LightZone(string Name, int LedCount);
 
 /// <summary>Uma peça com LEDs, do jeito que o Abaddon RGB enxerga, não importa o motor.</summary>
-public sealed record LightDevice(string EngineId, int Index, string Name, IReadOnlyList<LightZone> Zones, int LedCount);
+public sealed record LightDevice(string EngineId, int Index, string Name, IReadOnlyList<LightZone> Zones, int LedCount, string StableId = "");
 
 /// <summary>
 /// Um "motor" é quem realmente conversa com o hardware.

@@ -44,8 +44,14 @@ public sealed class NativeEngine : ILightingEngine
         var devices = new List<LightDevice>();
         foreach (var driver in _drivers)
         {
-            foreach (var device in driver.Detect(EngineId, devices.Count))
+            foreach (var detected in driver.Detect(EngineId, devices.Count))
             {
+                // Drivers novos devem fornecer um ID baseado em metadados físicos.
+                // Mantém um fallback determinístico para drivers que ainda não o fazem.
+                var device = string.IsNullOrWhiteSpace(detected.StableId)
+                    ? detected with { StableId = DeviceIdentity.Create(detected.Name,
+                        ledCount: detected.LedCount, zones: detected.Zones) }
+                    : detected;
                 _owners[device.Index] = driver;
                 devices.Add(device);
             }

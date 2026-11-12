@@ -19,18 +19,18 @@ public static class ColorComposer
 
             // Primeiro a cor própria da peça inteira, depois a da zona (a mais específica vence).
             foreach (var o in overrides)
-                if (o.IsWholeDevice && o.Matches(device.Name, zone.Name) && RgbColor.TryParse(o.Color, out var c))
+                if (o.IsWholeDevice && o.Matches(device.Name, zone.Name, device.StableId) && RgbColor.TryParse(o.Color, out var c))
                     color = c;
             foreach (var o in overrides)
-                if (!o.IsWholeDevice && o.Matches(device.Name, zone.Name) && RgbColor.TryParse(o.Color, out var c))
+                if (!o.IsWholeDevice && o.Matches(device.Name, zone.Name, device.StableId) && RgbColor.TryParse(o.Color, out var c))
                     color = c;
 
-            if (top is not null && top.Matches(device.Name, zone.Name) && RgbColor.TryParse(top.Color, out var t))
+            if (top is not null && top.Matches(device.Name, zone.Name, device.StableId) && RgbColor.TryParse(top.Color, out var t))
                 color = t;
 
             color = color.Scale(brightness);
 
-            var correction = corrections.FirstOrDefault(c => c.Matches(device.Name, zone.Name));
+            var correction = corrections.FirstOrDefault(c => c.Matches(device.Name, zone.Name, device.StableId));
             if (correction is not null)
             {
                 var (r, g, b) = ColorOrder.Apply(color.R, color.G, color.B, correction.Order);
