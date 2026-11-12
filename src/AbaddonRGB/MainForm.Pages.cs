@@ -333,7 +333,10 @@ internal sealed partial class MainForm
         _toggleControlButton = Ui.Button("Não controlar esta peça");
         _toggleControlButton.Click += async (_, _) => await ToggleControlAsync();
         _tips.SetToolTip(_toggleControlButton, "Se uma peça der problema, o Abaddon RGB para de enviar comandos para ela.");
-        body.Controls.Add(Ui.Row(ownColor, followMain, _toggleControlButton));
+        var swapButton = Ui.Button("Inverter vermelho/verde");
+        swapButton.Click += async (_, _) => await ToggleRedGreenSwapAsync();
+        _tips.SetToolTip(swapButton, "Use quando a peça mostra verde no lugar de vermelho (e rosa no lugar de verde). Clique de novo para desfazer.");
+        body.Controls.Add(Ui.Row(ownColor, followMain, swapButton, _toggleControlButton));
 
         page.Controls.Add(partsCard);
         return page;
@@ -469,6 +472,7 @@ internal sealed partial class MainForm
         var text = label;
         var own = _config.Overrides.FirstOrDefault(o => o.SameTarget(device, zone));
         if (own is not null) text += "  —  cor própria " + own.Color;
+        if (zone.Length > 0 && IsSwapped(device, zone)) text += "  —  vermelho/verde invertidos";
         if (zone.Length == 0 && _config.IsDisabled(device)) text += "  —  não controlada";
         return text;
     }
@@ -522,6 +526,40 @@ internal sealed partial class MainForm
             _config.Overrides.RemoveAll(o => string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase));
         else
             _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone));
+        await ApplyAsync();
+    }
+
+    private bool IsSwapped(string device, string zone) =>
+        _config.Corrections.Any(c => c.Matches(device, zone) && !string.Equals(c.Order, ColorOrder.Default, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Liga ou desliga a troca de vermelho com verde na zona selecionada
+    /// (ou em todas as zonas, se a peça inteira estiver selecionada).
+    /// </summary>
+    private async Task ToggleRedGreenSwapAsync()
+    {
+        var tag = SelectedTarget();
+        if (tag is null) return;
+
+        var device = _controller.Devices.FirstOrDefault(d => string.Equals(d.Name, tag.Device, StringComparison.OrdinalIgnoreCase));
+        if (device is null) return;
+
+        var zones = tag.Zone.Length > 0
+            ? new List<string> { tag.Zone }
+            : device.Zones.Select(z => z.Name).ToList();
+        if (zones.Count == 0) return;
+
+        // Se alguma zona escolhida já está invertida, o clique desfaz; senão, inverte todas.
+        var undo = zones.Any(z => IsSwapped(tag.Device, z));
+        foreach (var zone in zones)
+        {
+            _config.Corrections.RemoveAll(c => c.Matches(tag.Device, zone));
+            if (!undo)
+                _config.Corrections.Add(new ZoneCorrection { Device = tag.Device, Zone = zone, Order = "GRB" });
+        }
+
+        var where = tag.Zone.Length > 0 ? $"{tag.Device} › {tag.Zone}" : tag.Device;
+        _log.Info($"{where}: vermelho/verde " + (undo ? "voltaram ao normal." : "invertidos."));
         await ApplyAsync();
     }
 
