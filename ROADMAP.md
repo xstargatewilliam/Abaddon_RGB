@@ -45,6 +45,6 @@ Como fazer: cada regra de horário ganha uma opção "transição até HH:mm". E
 
 As regras de horário já aceitam hora e minuto (ex.: 22:30). Garantir o mesmo na transição gradual: início e fim em qualquer minuto (ex.: apagar de 22:15 a 23:45), com a mistura de cor e brilho atualizada de minuto em minuto ou menos.
 
-### Melhorar a interface
+### Interface (v0.4 feita; próximos refinamentos)
 
-A interface da v0.3 é funcional, mas simples. Pontos a trabalhar: visual mais caprichado (ícones, espaçamento, identidade do Abaddon RGB), uma prévia do PC mostrando a cor de cada peça, edição das regras de horário numa linha do tempo e ajustes feitos a partir do uso real.
+A v0.4 trouxe o visual do Design System v1.0: menu lateral, cartões, roda de cores, prévia do gabinete e rodapé com temperaturas. Ainda a fazer: pintar cada peça da prévia com a cor própria dela (hoje a prévia usa a cor geral), linha do tempo para as regras de horário, fonte Inter nos textos e ajustes a partir do uso real.

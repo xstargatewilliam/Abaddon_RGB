@@ -60,6 +60,7 @@ internal sealed partial class MainForm : Form
         // Garante que a janela tenha "handle" mesmo começando escondida,
         // para podermos atualizar a tela a partir das tarefas em segundo plano.
         _ = Handle;
+        Ui.UseDarkTitleBar(Handle);
         _log.LineAdded += OnLogLine;
         foreach (var line in _log.Recent) AppendLog(line);
 
@@ -82,7 +83,11 @@ internal sealed partial class MainForm : Form
 
     private string VersionText => "v" + _version.ToString(3);
 
-    private void SetStatus(string text) => _status.Text = text;
+    private void SetStatus(string text)
+    {
+        _status.Text = text;
+        _tips.SetToolTip(_status, text);
+    }
 
     // ---------------------------------------------------------------- conexão e aplicação
 
@@ -378,7 +383,6 @@ internal sealed partial class MainForm : Form
         var oldIcon = _trayIcon;
 
         _tray.Icon = newIcon;
-        Icon = newIcon;
         _trayIcon = newIcon;
 
         if (oldIcon is not null)
@@ -387,6 +391,8 @@ internal sealed partial class MainForm : Form
             oldIcon.Dispose();
         }
     }
+
+    protected override void OnPaintBackground(PaintEventArgs e) => BackdropPanel.Draw(this, e.Graphics);
 
     protected override void SetVisibleCore(bool value)
     {

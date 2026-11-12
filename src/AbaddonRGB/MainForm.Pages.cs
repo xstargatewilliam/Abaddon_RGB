@@ -3,18 +3,28 @@ using AbaddonRGB.Core.Engines;
 
 namespace AbaddonRGB;
 
-/// <summary>As telas: Cores, Perfis, Automações e Sistema.</summary>
+/// <summary>As telas: Início (cores), Perfis, Automações e Sistema.</summary>
 internal sealed partial class MainForm
 {
     private static readonly (string Name, string Hex)[] Presets =
     {
         ("Vermelho", "#FF0000"), ("Laranja", "#FF6A00"), ("Amarelo", "#FFD000"),
         ("Verde", "#00FF40"), ("Ciano", "#00E5FF"), ("Azul", "#0040FF"),
-        ("Azul Abaddon", "#3A6EA5"), ("Roxo", "#8A2BE2"), ("Rosa", "#FF2E9A"),
+        ("Roxo Abaddon", "#A020F0"), ("Magenta", "#FF2DAA"), ("Azul Abaddon", "#3A6EA5"),
         ("Branco", "#FFFFFF"),
     };
 
-    private static readonly string[] PageNames = { "Cores", "Perfis", "Automações", "Sistema" };
+    private static readonly (string Name, string Icon)[] PageInfo =
+    {
+        ("Início", "home"), ("Perfis", "folder"), ("Automações", "clock"), ("Sistema", "gear"),
+    };
+
+    // Medidas da janela (em 96 dpi; o Windows ajusta para outras escalas).
+    private const int SideWidth = 196;
+    private const int ContentLeft = 216;
+    private const int ContentWidth = 848;
+    private const int HostTop = 60;
+    private const int HostHeight = 580;
 
     /// <summary>O que um item da árvore de peças representa.</summary>
     private sealed class NodeTag
@@ -23,28 +33,34 @@ internal sealed partial class MainForm
         public string Zone = "";
     }
 
-    private readonly List<Button> _navButtons = new();
-    private readonly List<FlowLayoutPanel> _pages = new();
+    private readonly List<NavButton> _navButtons = new();
+    private readonly List<Panel> _pages = new();
+    private readonly HeaderPanel _header = new();
+    private readonly StatusPill _pill = new();
+    private readonly Label _cpuLabel = new();
+    private readonly Label _gpuLabel = new();
     private int _currentPage;
 
-    // Cores
+    // Início
+    private readonly ColorWheel _wheel = new();
     private readonly Panel _preview = new();
-    private readonly TextBox _hexBox = new();
-    private readonly TrackBar _brightness = new();
+    private readonly TextBox _hexBox = Ui.TextBox(96);
+    private readonly NeonSlider _brightness = new();
     private readonly Label _brightnessLabel = new();
+    private readonly PcPreview _pcPreview = new();
     private readonly TreeView _tree = new();
-    private Button _toggleControlButton = null!;
+    private NeonButton _toggleControlButton = null!;
 
     // Perfis
     private ListBox _profileList = null!;
-    private readonly TextBox _profileName = new();
+    private readonly TextBox _profileName = Ui.TextBox(210);
 
     // Sistema
     private readonly Label _engineLabel = new();
     private readonly TextBox _logBox = new();
-    private readonly CheckBox _startupCheck = Ui.Check("Iniciar com o Windows (abre escondido e reaplica as cores)");
+    private readonly CheckBox _startupCheck = Ui.Check("Iniciar com o Windows (escondido, reaplicando as cores)");
     private readonly CheckBox _autoUpdateCheck = Ui.Check("Atualizar automaticamente");
-    private readonly CheckBox _readOnlyCheck = Ui.Check("Modo somente leitura (detecta as peças, mas não envia nada)");
+    private readonly CheckBox _readOnlyCheck = Ui.Check("Modo somente leitura (não envia nada às peças)");
 
     private void BuildUi()
     {
@@ -56,61 +72,125 @@ internal sealed partial class MainForm
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        ClientSize = new Size(ContentLeft + ContentWidth + 16, 700);
         BackColor = Ui.Background;
         ForeColor = Ui.Text;
-        Font = new Font("Segoe UI", 9.75f);
-        Padding = new Padding(16, 12, 16, 12);
+        Font = Ui.Body();
+        DoubleBuffered = true;
 
-        var root = new TableLayoutPanel
+        try
         {
-            ColumnCount = 1,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        };
-
-        var title = new Label
-        {
-            Text = "Abaddon RGB  " + VersionText,
-            Font = new Font("Segoe UI Semibold", 15f),
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8),
-        };
-
-        var nav = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
-        for (var i = 0; i < PageNames.Length; i++)
-        {
-            var index = i;
-            var button = Ui.Button(PageNames[i]);
-            button.Margin = new Padding(0, 0, 6, 0);
-            button.Click += (_, _) => ShowPage(index);
-            _navButtons.Add(button);
-            nav.Controls.Add(button);
+            using var stream = typeof(MainForm).Assembly.GetManifestResourceStream("AbaddonRGB.Assets.app.ico");
+            if (stream is not null) Icon = new Icon(stream);
         }
+        catch { }
 
-        var host = new Panel
-        {
-            Size = new Size(Ui.ContentWidth + 34, 520),
-            Margin = new Padding(0, 0, 0, 8),
-        };
+        Controls.Add(BuildSidebar());
+
+        _header.Bounds = new Rectangle(ContentLeft, 10, ContentWidth, 44);
+        _header.Subtitle = VersionText;
+        Controls.Add(_header);
+
+        var host = new BackdropPanel { Bounds = new Rectangle(ContentLeft, HostTop, ContentWidth, HostHeight) };
         _pages.Add(BuildColorsPage());
         _pages.Add(BuildProfilesPage());
         _pages.Add(BuildAutomationPage());
         _pages.Add(BuildSystemPage());
         foreach (var page in _pages) host.Controls.Add(page);
+        Controls.Add(host);
+
+        Controls.Add(BuildFooter());
+        ResumeLayout(true);
+    }
+
+    private static BackdropPanel NewPage() => new() { Dock = DockStyle.Fill, Visible = false };
+
+    private Panel BuildSidebar()
+    {
+        var side = new Panel { Bounds = new Rectangle(0, 0, SideWidth, 700), BackColor = Ui.Sidebar };
+        side.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (var pen = new Pen(Ui.Border))
+                g.DrawLine(pen, side.Width - 1, 0, side.Width - 1, side.Height);
+
+            // "ABADDON" em branco e "RGB" em magenta, centralizados.
+            using var font = Ui.Heading(14f, bold: true);
+            using var white = new SolidBrush(Ui.Text);
+            using var pink = new SolidBrush(Ui.Accent2);
+            var first = g.MeasureString("ABADDON", font);
+            var second = g.MeasureString("RGB", font);
+            var x = (side.Width - (first.Width + second.Width - 6)) / 2f;
+            g.DrawString("ABADDON", font, white, x, 142);
+            g.DrawString("RGB", font, pink, x + first.Width - 6, 142);
+        };
+
+        var logo = new PictureBox
+        {
+            Bounds = new Rectangle((SideWidth - 116) / 2, 20, 116, 116),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Image = Ui.Asset("logo.png"),
+            BackColor = Ui.Sidebar,
+        };
+        side.Controls.Add(logo);
+
+        for (var i = 0; i < PageInfo.Length; i++)
+        {
+            var index = i;
+            var button = new NavButton(PageInfo[i].Name, Ui.Icon(PageInfo[i].Icon))
+            {
+                Location = new Point(0, 190 + i * 48),
+                Size = new Size(SideWidth - 1, 46),
+            };
+            button.Click += (_, _) => ShowPage(index);
+            _navButtons.Add(button);
+            side.Controls.Add(button);
+        }
+
+        _pill.Location = new Point(12, 700 - 46 - 14);
+        _pill.Set(false, "procurando as peças...");
+        side.Controls.Add(_pill);
+        return side;
+    }
+
+    private Panel BuildFooter()
+    {
+        var footer = new Panel
+        {
+            Bounds = new Rectangle(ContentLeft, HostTop + HostHeight + 10, ContentWidth, 40),
+            BackColor = Ui.Panel,
+        };
+        footer.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Ui.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, footer.Width - 1, footer.Height - 1);
+            var icon = Ui.Icon("thermo");
+            if (icon is not null)
+            {
+                e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                e.Graphics.DrawImage(icon, footer.Width - 214, 11, 18, 18);
+            }
+        };
 
         _status.AutoSize = false;
-        _status.Size = new Size(Ui.ContentWidth + 34, 54);
+        _status.AutoEllipsis = true;
+        _status.Bounds = new Rectangle(12, 11, ContentWidth - 240, 20);
         _status.ForeColor = Ui.Muted;
+        _status.BackColor = Ui.Panel;
+        footer.Controls.Add(_status);
 
-        root.Controls.Add(title);
-        root.Controls.Add(nav);
-        root.Controls.Add(host);
-        root.Controls.Add(_status);
-        Controls.Add(root);
+        foreach (var (label, x, text) in new[] { (_cpuLabel, ContentWidth - 192, "CPU --"), (_gpuLabel, ContentWidth - 98, "GPU --") })
+        {
+            label.AutoSize = false;
+            label.Bounds = new Rectangle(x, 11, 90, 20);
+            label.ForeColor = Ui.Text;
+            label.BackColor = Ui.Panel;
+            label.Text = text;
+            footer.Controls.Add(label);
+        }
 
-        ResumeLayout(true);
+        return footer;
     }
 
     private void ShowPage(int index)
@@ -119,34 +199,45 @@ internal sealed partial class MainForm
         for (var i = 0; i < _pages.Count; i++)
         {
             _pages[i].Visible = i == index;
-            _navButtons[i].BackColor = i == index ? Ui.Accent : Ui.Surface;
+            _navButtons[i].Active = i == index;
         }
 
+        _header.Title = PageInfo[index].Name;
         if (index == 1) RefreshProfileList();
         if (index == 2) OnAutomationPageShown();
         if (index == 3) RefreshEngineLabel();
     }
 
-    // ---------------------------------------------------------------- Cores
+    // ---------------------------------------------------------------- Início
 
-    private FlowLayoutPanel BuildColorsPage()
+    private Panel BuildColorsPage()
     {
-        var page = Ui.Page();
+        var page = NewPage();
 
-        _preview.Size = new Size(76, 76);
+        // ---- Cor geral
+        var colorCard = new Card("Cor geral", 0, 0, 468, 330);
+
+        _wheel.Bounds = new Rectangle(16, 44, 208, 208);
+        _wheel.ColorChanging += (_, _) => SetMainColor(_wheel.SelectedColor, fromWheel: true);
+        _wheel.ColorCommitted += async (_, _) => await ApplyAsync();
+        colorCard.Controls.Add(_wheel);
+
+        var hexLabel = Ui.Label("HEXADECIMAL", muted: true);
+        hexLabel.Font = Ui.Body(8f, semibold: true);
+        hexLabel.Location = new Point(244, 46);
+        colorCard.Controls.Add(hexLabel);
+
+        _preview.Bounds = new Rectangle(244, 68, 28, 28);
         _preview.Cursor = Cursors.Hand;
         _preview.BorderStyle = BorderStyle.FixedSingle;
-        _preview.Margin = new Padding(0, 0, 14, 0);
         _preview.Click += (_, _) => PickMainColor();
-        _tips.SetToolTip(_preview, "Clique para escolher qualquer cor");
+        _tips.SetToolTip(_preview, "Clique para abrir o seletor completo de cores");
+        colorCard.Controls.Add(_preview);
 
-        _hexBox.Width = 110;
+        _hexBox.Location = new Point(280, 70);
+        _hexBox.Margin = new Padding(0);
         _hexBox.CharacterCasing = CharacterCasing.Upper;
         _hexBox.MaxLength = 7;
-        _hexBox.BackColor = Ui.Surface;
-        _hexBox.ForeColor = Ui.Text;
-        _hexBox.BorderStyle = BorderStyle.FixedSingle;
-        _hexBox.Margin = new Padding(0, 2, 0, 8);
         _hexBox.KeyDown += (_, e) =>
         {
             if (e.KeyCode != Keys.Enter) return;
@@ -154,71 +245,86 @@ internal sealed partial class MainForm
             CommitHex(apply: true);
         };
         _hexBox.Leave += (_, _) => CommitHex(apply: false);
+        colorCard.Controls.Add(_hexBox);
 
-        var pickButton = Ui.Button("Escolher cor...");
+        var pickButton = Ui.Button("Mais cores...");
+        pickButton.Location = new Point(244, 108);
         pickButton.Click += (_, _) => PickMainColor();
+        _tips.SetToolTip(pickButton, "A roda escolhe cores vivas. Para tons escuros ou exatos, use este seletor ou o hexadecimal.");
+        colorCard.Controls.Add(pickButton);
 
-        var colorSide = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        colorSide.Controls.Add(Ui.Label("Cor geral (hexadecimal)", muted: true));
-        colorSide.Controls.Add(_hexBox);
-        colorSide.Controls.Add(pickButton);
-        page.Controls.Add(Ui.Row(_preview, colorSide));
+        _brightnessLabel.AutoSize = true;
+        _brightnessLabel.ForeColor = Ui.Muted;
+        _brightnessLabel.Font = Ui.Body(8f, semibold: true);
+        _brightnessLabel.Location = new Point(244, 160);
+        colorCard.Controls.Add(_brightnessLabel);
 
-        var presets = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
+        _brightness.Bounds = new Rectangle(238, 180, 214, 26);
+        _brightness.ValueChanged += (_, _) =>
+        {
+            _brightnessLabel.Text = $"BRILHO  {_brightness.Value}%";
+            if (_syncing) return;
+            _config.Brightness = _brightness.Value;
+            _pcPreview.SetLight(_preview.BackColor, _config.Brightness);
+        };
+        // Só aplica quando a pessoa solta o controle, para não mandar dezenas de comandos.
+        _brightness.Committed += async (_, _) => await ApplyAsync();
+        colorCard.Controls.Add(_brightness);
+
+        var applyButton = Ui.Button("Aplicar em tudo", primary: true);
+        applyButton.Location = new Point(244, 218);
+        applyButton.Click += async (_, _) => await ApplyAsync();
+        colorCard.Controls.Add(applyButton);
+
+        var x = 18;
         foreach (var (name, hex) in Presets)
         {
             var color = Ui.ToDrawing(RgbColor.ParseOr(hex, RgbColor.Black));
             var swatch = Ui.Swatch(color, 34);
+            swatch.Location = new Point(x, 272);
             _tips.SetToolTip(swatch, name);
             swatch.Click += async (_, _) =>
             {
                 SetMainColor(color);
                 await ApplyAsync();
             };
-            presets.Controls.Add(swatch);
+            colorCard.Controls.Add(swatch);
+            x += 43;
         }
 
-        page.Controls.Add(Ui.Label("Cores rápidas", muted: true));
-        page.Controls.Add(presets);
+        page.Controls.Add(colorCard);
 
-        _brightnessLabel.AutoSize = true;
-        _brightnessLabel.ForeColor = Ui.Muted;
-        _brightness.Minimum = 0;
-        _brightness.Maximum = 100;
-        _brightness.TickFrequency = 10;
-        _brightness.SmallChange = 5;
-        _brightness.LargeChange = 10;
-        _brightness.Width = Ui.ContentWidth - 10;
-        _brightness.Margin = new Padding(0);
-        _brightness.ValueChanged += (_, _) =>
+        // ---- Prévia do PC
+        var pcCard = new Card("Seu PC", 480, 0, 368, 330);
+        _pcPreview.Bounds = new Rectangle(34, 30, 300, 292);
+        pcCard.Controls.Add(_pcPreview);
+        page.Controls.Add(pcCard);
+
+        // ---- Peças
+        var partsCard = new Card("Peças", 0, 342, 848, 238);
+        var body = partsCard.Body;
+        body.Controls.Add(Ui.Label("Selecione uma peça ou zona para dar uma cor só dela.", muted: true));
+
+        var icons = new ImageList { ImageSize = new Size(18, 18), ColorDepth = ColorDepth.Depth32Bit };
+        foreach (var key in new[] { "board", "ram", "keyboard", "mouse", "fan", "bolt" })
         {
-            _brightnessLabel.Text = $"Brilho: {_brightness.Value}%";
-            if (!_syncing) _config.Brightness = _brightness.Value;
-        };
-        // Só aplica quando a pessoa solta o controle, para não mandar dezenas de comandos.
-        _brightness.MouseUp += async (_, _) => await ApplyAsync();
-        _brightness.KeyUp += async (_, _) => await ApplyAsync();
-        page.Controls.Add(_brightnessLabel);
-        page.Controls.Add(_brightness);
+            var icon = Ui.Icon(key);
+            if (icon is not null) icons.Images.Add(key, icon);
+        }
 
-        var applyButton = Ui.Button("Aplicar em tudo");
-        applyButton.Font = new Font("Segoe UI Semibold", 9.75f);
-        applyButton.BackColor = Ui.Accent;
-        applyButton.Click += async (_, _) => await ApplyAsync();
-        page.Controls.Add(Ui.Row(applyButton));
-
-        page.Controls.Add(Ui.Label("Peças — selecione uma peça ou zona para dar uma cor só dela", muted: true));
-
-        _tree.Size = new Size(Ui.ContentWidth - 10, 172);
-        _tree.BackColor = Ui.Surface;
+        _tree.Size = new Size(partsCard.InnerWidth, 112);
+        _tree.ImageList = icons;
+        _tree.BackColor = Ui.Field;
         _tree.ForeColor = Ui.Text;
         _tree.LineColor = Ui.Border;
         _tree.BorderStyle = BorderStyle.None;
         _tree.HideSelection = false;
         _tree.ShowNodeToolTips = true;
-        _tree.Margin = new Padding(0, 2, 0, 8);
+        _tree.ItemHeight = 22;
+        _tree.Margin = new Padding(0, 2, 0, 10);
+        Ui.DarkScrollbars(_tree);
         _tree.AfterSelect += (_, _) => UpdateToggleControlText();
-        page.Controls.Add(_tree);
+        body.Controls.Add(_tree);
 
         var ownColor = Ui.Button("Cor própria...");
         ownColor.Click += async (_, _) => await SetOwnColorAsync();
@@ -227,19 +333,30 @@ internal sealed partial class MainForm
         _toggleControlButton = Ui.Button("Não controlar esta peça");
         _toggleControlButton.Click += async (_, _) => await ToggleControlAsync();
         _tips.SetToolTip(_toggleControlButton, "Se uma peça der problema, o Abaddon RGB para de enviar comandos para ela.");
-        page.Controls.Add(Ui.Row(ownColor, followMain, _toggleControlButton));
+        body.Controls.Add(Ui.Row(ownColor, followMain, _toggleControlButton));
 
+        page.Controls.Add(partsCard);
         return page;
     }
 
-    private void SetMainColor(Color color)
+    private static string IconFor(string deviceName)
+    {
+        var name = deviceName.ToUpperInvariant();
+        if (name.IndexOf("DRAM", StringComparison.Ordinal) >= 0 || name.IndexOf("RAM", StringComparison.Ordinal) >= 0) return "ram";
+        if (name.IndexOf("KEYBOARD", StringComparison.Ordinal) >= 0) return "keyboard";
+        if (name.IndexOf("MOUSE", StringComparison.Ordinal) >= 0) return "mouse";
+        if (name.IndexOf("ASROCK", StringComparison.Ordinal) >= 0 || name.IndexOf("B450", StringComparison.Ordinal) >= 0) return "board";
+        return "bolt";
+    }
+
+    private void SetMainColor(Color color, bool fromWheel = false)
     {
         _config.Color = Ui.FromDrawing(color).ToHex();
-        SyncColorUi();
+        SyncColorUi(moveWheel: !fromWheel);
     }
 
     /// <summary>Atualiza a tela a partir das configurações (cor, brilho, ícone).</summary>
-    private void SyncColorUi()
+    private void SyncColorUi(bool moveWheel = true)
     {
         _syncing = true;
         try
@@ -248,7 +365,9 @@ internal sealed partial class MainForm
             _preview.BackColor = color;
             _hexBox.Text = _config.Color;
             _brightness.Value = Ui.Clamp(_config.Brightness, 0, 100);
-            _brightnessLabel.Text = $"Brilho: {_brightness.Value}%";
+            _brightnessLabel.Text = $"BRILHO  {_brightness.Value}%";
+            if (moveWheel) _wheel.ShowColor(color);
+            _pcPreview.SetLight(color, _config.Brightness);
             UpdateTrayIcon(color);
         }
         finally
@@ -305,6 +424,8 @@ internal sealed partial class MainForm
             {
                 Tag = new NodeTag { Device = device.Name },
                 ToolTipText = $"{device.LedCount} LEDs, motor {EngineName(device.EngineId)}",
+                ImageKey = IconFor(device.Name),
+                SelectedImageKey = IconFor(device.Name),
             };
             if (_config.IsDisabled(device.Name)) node.ForeColor = Ui.Muted;
 
@@ -316,6 +437,8 @@ internal sealed partial class MainForm
                     {
                         Tag = new NodeTag { Device = device.Name, Zone = zone.Name },
                         ToolTipText = $"{zone.LedCount} LEDs",
+                        ImageKey = "bolt",
+                        SelectedImageKey = "bolt",
                     };
                     node.Nodes.Add(child);
                     if (IsSame(selected, device.Name, zone.Name)) toSelect = child;
@@ -327,7 +450,7 @@ internal sealed partial class MainForm
         }
 
         if (devices.Count == 0)
-            _tree.Nodes.Add(new TreeNode("Nenhuma peça detectada ainda.") { ForeColor = Ui.Muted });
+            _tree.Nodes.Add(new TreeNode("Nenhuma peça detectada ainda.") { ForeColor = Ui.Muted, ImageKey = "bolt", SelectedImageKey = "bolt" });
 
         _tree.ExpandAll();
         if (toSelect is not null) _tree.SelectedNode = toSelect;
@@ -423,19 +546,21 @@ internal sealed partial class MainForm
 
     // ---------------------------------------------------------------- Perfis
 
-    private FlowLayoutPanel BuildProfilesPage()
+    private Panel BuildProfilesPage()
     {
-        var page = Ui.Page();
-        page.Controls.Add(Ui.Label("Um perfil guarda a cor geral, o brilho e as cores próprias de cada peça. " +
-                                   "Os perfis também aparecem no menu do ícone perto do relógio.", muted: true));
+        var page = NewPage();
 
-        _profileList = Ui.List(230);
-        _profileList.Margin = new Padding(0, 8, 0, 8);
+        var listCard = new Card("Perfis salvos", 0, 0, 520, 580);
+        var body = listCard.Body;
+        body.Controls.Add(Ui.Label("Um perfil guarda a cor geral, o brilho e as cores próprias de cada peça.",
+            muted: true, maxWidth: listCard.InnerWidth));
+
+        _profileList = Ui.List(listCard.InnerWidth, 410);
+        _profileList.Margin = new Padding(0, 6, 0, 12);
         _profileList.DoubleClick += async (_, _) => await ApplySelectedProfileAsync();
-        page.Controls.Add(_profileList);
+        body.Controls.Add(_profileList);
 
-        var apply = Ui.Button("Aplicar");
-        apply.BackColor = Ui.Accent;
+        var apply = Ui.Button("Aplicar", primary: true);
         apply.Click += async (_, _) => await ApplySelectedProfileAsync();
         var overwrite = Ui.Button("Atualizar com as cores atuais");
         overwrite.Click += (_, _) =>
@@ -448,18 +573,23 @@ internal sealed partial class MainForm
         };
         var delete = Ui.Button("Excluir");
         delete.Click += (_, _) => DeleteSelectedProfile();
-        page.Controls.Add(Ui.Row(apply, overwrite, delete));
+        body.Controls.Add(Ui.Row(apply, overwrite, delete));
+        page.Controls.Add(listCard);
 
-        page.Controls.Add(Ui.Section("Novo perfil"));
-        _profileName.Width = 200;
+        var newCard = new Card("Novo perfil", 532, 0, 316, 170);
         _profileName.MaxLength = 30;
-        _profileName.BackColor = Ui.Surface;
-        _profileName.ForeColor = Ui.Text;
-        _profileName.BorderStyle = BorderStyle.FixedSingle;
-        _profileName.Margin = new Padding(0, 4, 8, 0);
-        var save = Ui.Button("Salvar as cores atuais");
+        var save = Ui.Button("Salvar as cores atuais", primary: true);
         save.Click += (_, _) => SaveNewProfile();
-        page.Controls.Add(Ui.Row(Ui.InlineLabel("Nome"), _profileName, save));
+        newCard.Body.Controls.Add(Ui.Row(Ui.InlineLabel("Nome"), _profileName));
+        newCard.Body.Controls.Add(save);
+        page.Controls.Add(newCard);
+
+        var tipCard = new Card("Dica", 532, 182, 316, 200);
+        tipCard.Body.Controls.Add(Ui.Label(
+            "Os perfis também aparecem no menu do ícone perto do relógio: clique com o botão direito nele para trocar sem abrir a janela.\n\n" +
+            "Na aba Automações, um perfil pode entrar sozinho num horário.",
+            muted: true, maxWidth: tipCard.InnerWidth));
+        page.Controls.Add(tipCard);
 
         return page;
     }
@@ -545,16 +675,16 @@ internal sealed partial class MainForm
 
     // ---------------------------------------------------------------- Sistema
 
-    private FlowLayoutPanel BuildSystemPage()
+    private Panel BuildSystemPage()
     {
-        var page = Ui.Page();
+        var page = NewPage();
 
-        page.Controls.Add(Ui.Section("Motores"));
+        var enginesCard = new Card("Motores", 0, 0, 418, 232);
         _engineLabel.AutoSize = true;
-        _engineLabel.MaximumSize = new Size(Ui.ContentWidth - 10, 0);
+        _engineLabel.MaximumSize = new Size(enginesCard.InnerWidth, 0);
         _engineLabel.ForeColor = Ui.Text;
-        _engineLabel.Margin = new Padding(0, 0, 0, 8);
-        page.Controls.Add(_engineLabel);
+        _engineLabel.Margin = new Padding(0, 0, 0, 12);
+        enginesCard.Body.Controls.Add(_engineLabel);
 
         var reconnect = Ui.Button("Reconectar");
         reconnect.Click += async (_, _) => await ConnectAndApplyAsync(applyAfterConnect: false);
@@ -575,8 +705,11 @@ internal sealed partial class MainForm
         var probe = Ui.Button("Detecção nativa (teste)");
         probe.Click += async (_, _) => await RunNativeProbeAsync();
         _tips.SetToolTip(probe, "Procura as peças direto no Windows, sem o OpenRGB. Só lê, não envia nada.");
-        page.Controls.Add(Ui.Row(reconnect, redetect, probe));
+        enginesCard.Body.Controls.Add(Ui.Row(reconnect, redetect));
+        enginesCard.Body.Controls.Add(Ui.Row(probe));
+        page.Controls.Add(enginesCard);
 
+        var optionsCard = new Card("Opções", 430, 0, 418, 232);
         _readOnlyCheck.Checked = _config.ReadOnly;
         _readOnlyCheck.CheckedChanged += (_, _) =>
         {
@@ -585,7 +718,6 @@ internal sealed partial class MainForm
             _log.Info("Modo somente leitura " + (_config.ReadOnly ? "ligado." : "desligado."));
             if (!_config.ReadOnly) _ = ApplyAsync();
         };
-        page.Controls.Add(_readOnlyCheck);
 
         try { _startupCheck.Checked = StartupManager.IsEnabled; } catch { }
         _startupCheck.CheckedChanged += (_, _) =>
@@ -593,37 +725,44 @@ internal sealed partial class MainForm
             try { StartupManager.SetEnabled(_startupCheck.Checked); }
             catch (Exception ex) { SetStatus("Não consegui alterar a inicialização automática: " + ex.Message); }
         };
-        page.Controls.Add(_startupCheck);
 
-        var updateButton = Ui.Button("Procurar atualização");
-        updateButton.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
         _autoUpdateCheck.Checked = _config.AutoUpdate;
-        _autoUpdateCheck.Margin = new Padding(4, 6, 0, 0);
         _autoUpdateCheck.CheckedChanged += (_, _) =>
         {
             _config.AutoUpdate = _autoUpdateCheck.Checked;
             try { _config.Save(); } catch { }
         };
-        page.Controls.Add(Ui.Row(updateButton, _autoUpdateCheck));
 
-        page.Controls.Add(Ui.Section("Registro"));
+        var updateButton = Ui.Button("Procurar atualização");
+        updateButton.Margin = new Padding(0, 8, 0, 0);
+        updateButton.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
+
+        optionsCard.Body.Controls.Add(_startupCheck);
+        optionsCard.Body.Controls.Add(_autoUpdateCheck);
+        optionsCard.Body.Controls.Add(_readOnlyCheck);
+        optionsCard.Body.Controls.Add(updateButton);
+        page.Controls.Add(optionsCard);
+
+        var logCard = new Card("Registro", 0, 244, 848, 336);
         _logBox.Multiline = true;
         _logBox.ReadOnly = true;
         _logBox.ScrollBars = ScrollBars.Vertical;
         _logBox.WordWrap = false;
-        _logBox.Size = new Size(Ui.ContentWidth - 10, 170);
-        _logBox.BackColor = Ui.Surface;
+        _logBox.Size = new Size(logCard.InnerWidth, 230);
+        _logBox.BackColor = Ui.Field;
         _logBox.ForeColor = Ui.Text;
         _logBox.BorderStyle = BorderStyle.None;
-        _logBox.Font = new Font("Consolas", 8.5f);
-        _logBox.Margin = new Padding(0, 2, 0, 8);
-        page.Controls.Add(_logBox);
+        _logBox.Font = new Font("Consolas", 8.75f);
+        _logBox.Margin = new Padding(0, 2, 0, 10);
+        Ui.DarkScrollbars(_logBox);
+        logCard.Body.Controls.Add(_logBox);
 
         var openConfig = Ui.Button("Abrir configurações");
         openConfig.Click += (_, _) => OpenInExplorer(AppConfig.FilePath, select: true);
         var openLogs = Ui.Button("Abrir pasta de registros");
         openLogs.Click += (_, _) => OpenInExplorer(AppConfig.LogFolder, select: false);
-        page.Controls.Add(Ui.Row(openConfig, openLogs));
+        logCard.Body.Controls.Add(Ui.Row(openConfig, openLogs));
+        page.Controls.Add(logCard);
 
         return page;
     }
@@ -643,7 +782,10 @@ internal sealed partial class MainForm
             lines.Add(text);
         }
 
-        _engineLabel.Text = string.Join(Environment.NewLine, lines);
+        _engineLabel.Text = string.Join(Environment.NewLine + Environment.NewLine, lines);
+
+        var count = _controller.Devices.Count;
+        _pill.Set(_controller.IsConnected, _controller.IsConnected ? $"{count} peças online" : "abra a aba Sistema");
     }
 
     private async Task RunNativeProbeAsync()

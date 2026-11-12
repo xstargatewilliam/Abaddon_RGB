@@ -50,12 +50,14 @@ internal sealed partial class MainForm
     private Button _hotColor = null!;
     private readonly Label _temperatureLive = new();
 
-    private FlowLayoutPanel BuildAutomationPage()
+    private Panel BuildAutomationPage()
     {
-        var page = Ui.Page();
+        var page = NewPage();
+        var scheduleCard = new Card("Por horário", 0, 0, 848, 250);
+        var temperatureCard = new Card("Por temperatura", 0, 262, 848, 318);
+        var target = scheduleCard.Body;
 
         // ---- Por horário
-        page.Controls.Add(Ui.Section("Por horário"));
         _scheduleCheck.Checked = _config.Schedule.Enabled;
         _scheduleCheck.CheckedChanged += async (_, _) =>
         {
@@ -66,23 +68,23 @@ internal sealed partial class MainForm
             if (_config.Schedule.Enabled && ApplyScheduleNow(announce: true))
                 await ApplyAsync();
         };
-        page.Controls.Add(_scheduleCheck);
+        target.Controls.Add(_scheduleCheck);
 
-        _ruleList = Ui.List(84);
-        page.Controls.Add(_ruleList);
+        _ruleList = Ui.List(scheduleCard.InnerWidth, 100);
+        target.Controls.Add(_ruleList);
 
         _ruleHour = Ui.Number(0, 23, 22, 46);
         _ruleMinute = Ui.Number(0, 59, 0, 46);
-        _ruleProfile = Ui.Combo(130);
+        _ruleProfile = Ui.Combo(170);
         var addRule = Ui.Button("Adicionar");
         addRule.Click += async (_, _) => await AddRuleAsync();
         var removeRule = Ui.Button("Remover");
         removeRule.Click += (_, _) => RemoveSelectedRule();
-        page.Controls.Add(Ui.Row(Ui.InlineLabel("Às"), _ruleHour, Ui.InlineLabel(":"), _ruleMinute,
+        target.Controls.Add(Ui.Row(Ui.InlineLabel("Às"), _ruleHour, Ui.InlineLabel(":"), _ruleMinute,
             Ui.InlineLabel("aplicar"), _ruleProfile, addRule, removeRule));
 
         // ---- Por temperatura
-        page.Controls.Add(Ui.Section("Por temperatura"));
+        target = temperatureCard.Body;
         _temperatureCheck.Checked = _config.Temperature.Enabled;
         _temperatureCheck.CheckedChanged += async (_, _) =>
         {
@@ -92,9 +94,9 @@ internal sealed partial class MainForm
             _log.Info("Automação por temperatura " + (_config.Temperature.Enabled ? "ligada." : "desligada."));
             await RestartTemperatureAsync();
         };
-        page.Controls.Add(_temperatureCheck);
+        target.Controls.Add(_temperatureCheck);
 
-        _sensorCombo = Ui.Combo(330);
+        _sensorCombo = Ui.Combo(440);
         _sensorCombo.SelectedIndexChanged += async (_, _) =>
         {
             if (_syncing || !(_sensorCombo.SelectedItem is SensorItem item)) return;
@@ -104,7 +106,7 @@ internal sealed partial class MainForm
         };
         var refreshSensors = Ui.Button("Atualizar");
         refreshSensors.Click += (_, _) => FillSensorCombo();
-        page.Controls.Add(Ui.Row(Ui.InlineLabel("Sensor"), _sensorCombo, refreshSensors));
+        target.Controls.Add(Ui.Row(Ui.InlineLabel("Sensor"), _sensorCombo, refreshSensors));
 
         var settings = _config.Temperature;
         _coldTemp = Ui.Number(0, 119, settings.ColdTemp);
@@ -113,16 +115,16 @@ internal sealed partial class MainForm
         _hotTemp.ValueChanged += async (_, _) => await OnTemperatureRangeChangedAsync();
         _coldColor = Ui.Swatch(Ui.ToDrawing(RgbColor.ParseOr(settings.ColdColor, new RgbColor(0, 64, 255))), 28);
         _hotColor = Ui.Swatch(Ui.ToDrawing(RgbColor.ParseOr(settings.HotColor, new RgbColor(255, 0, 0))), 28);
-        _coldColor.Margin = new Padding(0, 2, 14, 0);
-        _hotColor.Margin = new Padding(0, 2, 0, 0);
+        _coldColor.Margin = new Padding(0, 3, 18, 0);
+        _hotColor.Margin = new Padding(0, 3, 0, 0);
         _coldColor.Click += async (_, _) => await PickTemperatureColorAsync(cold: true);
         _hotColor.Click += async (_, _) => await PickTemperatureColorAsync(cold: false);
         _tips.SetToolTip(_coldColor, "Cor quando está frio");
         _tips.SetToolTip(_hotColor, "Cor quando está quente");
-        page.Controls.Add(Ui.Row(Ui.InlineLabel("Frio até"), _coldTemp, Ui.InlineLabel("°C"), _coldColor,
+        target.Controls.Add(Ui.Row(Ui.InlineLabel("Frio até"), _coldTemp, Ui.InlineLabel("°C"), _coldColor,
             Ui.InlineLabel("Quente a partir de"), _hotTemp, Ui.InlineLabel("°C"), _hotColor));
 
-        _targetCombo = Ui.Combo(330);
+        _targetCombo = Ui.Combo(440);
         _targetCombo.SelectedIndexChanged += async (_, _) =>
         {
             if (_syncing || !(_targetCombo.SelectedItem is TargetItem item)) return;
@@ -131,17 +133,20 @@ internal sealed partial class MainForm
             SaveConfigQuietly();
             await RestartTemperatureAsync();
         };
-        page.Controls.Add(Ui.Row(Ui.InlineLabel("Mostrar em"), _targetCombo));
+        target.Controls.Add(Ui.Row(Ui.InlineLabel("Mostrar em"), _targetCombo));
 
         _temperatureLive.AutoSize = true;
-        _temperatureLive.MaximumSize = new Size(Ui.ContentWidth - 10, 0);
+        _temperatureLive.MaximumSize = new Size(temperatureCard.InnerWidth, 0);
+        _temperatureLive.Margin = new Padding(0, 6, 0, 0);
         _temperatureLive.ForeColor = Ui.Muted;
         _temperatureLive.Text = "Lendo sensores...";
-        page.Controls.Add(_temperatureLive);
+        target.Controls.Add(_temperatureLive);
 
         RefreshRuleProfiles();
         RefreshRuleList();
         RefreshTemperatureTargets();
+        page.Controls.Add(scheduleCard);
+        page.Controls.Add(temperatureCard);
         return page;
     }
 
@@ -409,6 +414,18 @@ internal sealed partial class MainForm
         await ApplyAsync();
     }
 
+    private void UpdateFooterTemperatures(IReadOnlyList<TemperatureSensor> sensors)
+    {
+        string Show(string prefix)
+        {
+            var sensor = sensors.FirstOrDefault(s => s.Value is not null && s.Name.StartsWith(prefix, StringComparison.Ordinal));
+            return sensor is null ? prefix + " --" : $"{prefix} {sensor.Value:0} °C";
+        }
+
+        _cpuLabel.Text = Show("CPU");
+        _gpuLabel.Text = Show("GPU");
+    }
+
     private TemperatureSensor? PickSensor(IReadOnlyList<TemperatureSensor> sensors)
     {
         var id = _config.Temperature.SensorId;
@@ -426,7 +443,7 @@ internal sealed partial class MainForm
 
         var enabled = _config.Temperature.Enabled;
         var watching = Visible && _currentPage == 2;
-        if (!enabled && !watching) return;
+        if (!enabled && !Visible) return;
 
         _readingSensors = true;
         try
@@ -448,6 +465,7 @@ internal sealed partial class MainForm
             });
 
             if (_exiting) return;
+            UpdateFooterTemperatures(sensors);
             var firstRead = _lastSensors.Count == 0 && sensors.Count > 0;
             _lastSensors = sensors;
             if (firstRead)

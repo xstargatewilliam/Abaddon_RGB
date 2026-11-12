@@ -9,8 +9,9 @@
     <RootNamespace>AbaddonRGB</RootNamespace>
     <AssemblyName>AbaddonRGB</AssemblyName>
     <Product>Abaddon RGB</Product>
-    <Version>0.3.0</Version>
-    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <Version>0.4.0</Version>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +19,11 @@
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
     <!-- Lista os dispositivos USB (HID) para a detecção nativa. -->
     <PackageReference Include="HidSharp" Version="2.6.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Imagens e fontes do tema, embutidas no .exe como AbaddonRGB.Assets.<arquivo>. -->
+    <EmbeddedResource Include="Assets\*.png;Assets\*.jpg;Assets\*.ttf;Assets\app.ico" LogicalName="AbaddonRGB.Assets.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

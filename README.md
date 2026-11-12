@@ -5,6 +5,8 @@ Ele usa o [OpenRGB](https://openrgb.org) como "motor": o OpenRGB conversa com o 
 
 ## O que o programa faz
 
+A interface segue o Design System v1.0 do Abaddon RGB (tema cósmico escuro, roxo e magenta, fonte Oxanium nos títulos): menu lateral, roda de cores, prévia do gabinete na cor atual e rodapé com a temperatura da CPU e da placa de vídeo.
+
 **Cores**
 - Uma cor geral para tudo (seletor, hexadecimal ou cores rápidas) e brilho de 0 a 100%.
 - Cor própria por peça ou por zona: o cooler de uma cor, a placa de outra, as memórias de outra.
@@ -85,7 +87,8 @@ dotnet build AbaddonRGB.sln -c Release
 Estrutura:
 
 - `src/AbaddonRGB.Core`: motores, composição das cores, perfis, automações, configurações e atualizador (sem interface).
-- `src/AbaddonRGB`: a janela, o ícone da bandeja, a leitura de sensores e a detecção nativa (Windows Forms).
+- `src/AbaddonRGB`: a janela, o ícone da bandeja, a leitura de sensores e a detecção nativa (Windows Forms com controles desenhados à mão em `Controls.cs`).
+- `src/AbaddonRGB/Assets`: logo, fundo, ícones e ilustração do gabinete (arte do projeto) e a fonte Oxanium (licença OFL, arquivo `Oxanium-OFL.txt`).
 
 O GitHub Actions compila a cada push.
 
