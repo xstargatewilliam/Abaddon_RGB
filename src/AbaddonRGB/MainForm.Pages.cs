@@ -30,6 +30,7 @@ internal sealed partial class MainForm
     private sealed class NodeTag
     {
         public string Device = "";
+        public string DeviceId = "";
         public string Zone = "";
     }
 
@@ -425,12 +426,12 @@ internal sealed partial class MainForm
         {
             var node = new TreeNode(DescribeTarget(device.Name, "", device.Name))
             {
-                Tag = new NodeTag { Device = device.Name },
+                Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId },
                 ToolTipText = $"{device.LedCount} LEDs, motor {EngineName(device.EngineId)}",
                 ImageKey = IconFor(device.Name),
                 SelectedImageKey = IconFor(device.Name),
             };
-            if (_config.IsDisabled(device.Name)) node.ForeColor = Ui.Muted;
+            if (_config.IsDisabled(device.Name, device.StableId)) node.ForeColor = Ui.Muted;
 
             if (device.Zones.Count > 1)
             {
@@ -438,7 +439,7 @@ internal sealed partial class MainForm
                 {
                     var child = new TreeNode(DescribeTarget(device.Name, zone.Name, zone.Name))
                     {
-                        Tag = new NodeTag { Device = device.Name, Zone = zone.Name },
+                        Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name },
                         ToolTipText = $"{zone.LedCount} LEDs",
                         ImageKey = "bolt",
                         SelectedImageKey = "bolt",
@@ -490,7 +491,7 @@ internal sealed partial class MainForm
     private void UpdateToggleControlText()
     {
         var tag = _tree.SelectedNode?.Tag as NodeTag;
-        _toggleControlButton.Text = tag is not null && _config.IsDisabled(tag.Device)
+        _toggleControlButton.Text = tag is not null && _config.IsDisabled(tag.Device, tag.DeviceId)
             ? "Voltar a controlar"
             : "Não controlar esta peça";
     }
@@ -500,16 +501,17 @@ internal sealed partial class MainForm
         var tag = SelectedTarget();
         if (tag is null) return;
 
-        var current = _config.Overrides.FirstOrDefault(o => o.SameTarget(tag.Device, tag.Zone));
+        var current = _config.Overrides.FirstOrDefault(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
         var start = current is not null ? Ui.ToDrawing(RgbColor.ParseOr(current.Color, RgbColor.Black)) : _preview.BackColor;
 
         using var dialog = new ColorDialog { FullOpen = true, AnyColor = true, Color = start };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
-        _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone));
+        _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
         _config.Overrides.Add(new TargetColor
         {
             Device = tag.Device,
+            DeviceId = tag.DeviceId,
             Zone = tag.Zone,
             Color = Ui.FromDrawing(dialog.Color).ToHex(),
         });
@@ -523,9 +525,12 @@ internal sealed partial class MainForm
 
         // Na peça inteira, limpa também as cores próprias das zonas dela.
         if (tag.Zone.Length == 0)
-            _config.Overrides.RemoveAll(o => string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase));
+            _config.Overrides.RemoveAll(o =>
+                string.IsNullOrWhiteSpace(o.DeviceId)
+                    ? string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase)
+                    : string.Equals(o.DeviceId, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
         else
-            _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone));
+            _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
         await ApplyAsync();
     }
 
@@ -568,14 +573,18 @@ internal sealed partial class MainForm
         var tag = SelectedTarget();
         if (tag is null) return;
 
-        if (_config.IsDisabled(tag.Device))
+        if (_config.IsDisabled(tag.Device, tag.DeviceId))
         {
             _config.DisabledDevices.RemoveAll(d => string.Equals(d, tag.Device, StringComparison.OrdinalIgnoreCase));
+            _config.DisabledDeviceIds.RemoveAll(id => string.Equals(id, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
             _log.Info($"{tag.Device}: voltou a ser controlada.");
         }
         else
         {
-            _config.DisabledDevices.Add(tag.Device);
+            if (!string.IsNullOrWhiteSpace(tag.DeviceId))
+                _config.DisabledDeviceIds.Add(tag.DeviceId);
+            else
+                _config.DisabledDevices.Add(tag.Device);
             _log.Info($"{tag.Device}: não será mais controlada.");
         }
 

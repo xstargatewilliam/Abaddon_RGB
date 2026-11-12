@@ -8,6 +8,7 @@ public sealed class ZoneCorrection
 {
     /// <summary>Trecho do nome do dispositivo (sem diferenciar maiúsculas). Ex.: "ASRock".</summary>
     public string Device { get; set; } = "";
+    public string DeviceId { get; set; } = "";
 
     /// <summary>Trecho do nome da zona. Ex.: "Addressable Header".</summary>
     public string Zone { get; set; } = "";
@@ -15,10 +16,11 @@ public sealed class ZoneCorrection
     /// <summary>Ordem em que os LEDs da zona leem as cores. Ex.: "GRB".</summary>
     public string Order { get; set; } = ColorOrder.Default;
 
-    public bool Matches(string deviceName, string zoneName) =>
-        !string.IsNullOrWhiteSpace(Device) &&
+    public bool Matches(string deviceName, string zoneName, string stableId = "") =>
         !string.IsNullOrWhiteSpace(Zone) &&
-        deviceName.Contains(Device, StringComparison.OrdinalIgnoreCase) &&
+        (string.IsNullOrWhiteSpace(DeviceId)
+            ? !string.IsNullOrWhiteSpace(Device) && deviceName.Contains(Device, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(DeviceId, stableId, StringComparison.OrdinalIgnoreCase)) &&
         zoneName.Contains(Zone, StringComparison.OrdinalIgnoreCase);
 }
 
@@ -26,21 +28,26 @@ public sealed class ZoneCorrection
 public sealed class TargetColor
 {
     public string Device { get; set; } = "";
+    public string DeviceId { get; set; } = "";
     public string Zone { get; set; } = "";
     public string Color { get; set; } = "#FFFFFF";
 
     [JsonIgnore]
     public bool IsWholeDevice => string.IsNullOrWhiteSpace(Zone);
 
-    public bool Matches(string deviceName, string zoneName) =>
-        string.Equals(Device, deviceName, StringComparison.OrdinalIgnoreCase) &&
+    public bool Matches(string deviceName, string zoneName, string stableId = "") =>
+        (string.IsNullOrWhiteSpace(DeviceId)
+            ? string.Equals(Device, deviceName, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(DeviceId, stableId, StringComparison.OrdinalIgnoreCase)) &&
         (IsWholeDevice || string.Equals(Zone, zoneName, StringComparison.OrdinalIgnoreCase));
 
-    public bool SameTarget(string device, string zone) =>
-        string.Equals(Device, device, StringComparison.OrdinalIgnoreCase) &&
+    public bool SameTarget(string device, string zone, string stableId = "") =>
+        (string.IsNullOrWhiteSpace(DeviceId) || string.IsNullOrWhiteSpace(stableId)
+            ? string.Equals(Device, device, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(DeviceId, stableId, StringComparison.OrdinalIgnoreCase)) &&
         string.Equals(Zone ?? "", zone ?? "", StringComparison.OrdinalIgnoreCase);
 
-    public TargetColor Clone() => new() { Device = Device, Zone = Zone, Color = Color };
+    public TargetColor Clone() => new() { Device = Device, DeviceId = DeviceId, Zone = Zone, Color = Color };
 }
 
 /// <summary>Um conjunto de cores salvo com nome (ex.: "Dia", "Noite").</summary>
@@ -79,6 +86,7 @@ public sealed class TemperatureSettings
 
     /// <summary>Peça que mostra a temperatura. Vazio = todas.</summary>
     public string TargetDevice { get; set; } = "";
+    public string TargetDeviceId { get; set; } = "";
 
     /// <summary>Zona da peça. Vazio = a peça inteira.</summary>
     public string TargetZone { get; set; } = "";
@@ -103,6 +111,9 @@ public sealed class AppConfig
 
     /// <summary>Peças que o Abaddon RGB não deve tocar.</summary>
     public List<string> DisabledDevices { get; set; } = new();
+
+    /// <summary>IDs persistentes das peças que não devem receber comandos.</summary>
+    public List<string> DisabledDeviceIds { get; set; } = new();
 
     /// <summary>Reaplica as cores assim que o programa conecta.</summary>
     public bool ApplyOnStart { get; set; } = true;
@@ -192,15 +203,70 @@ public sealed class AppConfig
         {
             Normalize();
             Directory.CreateDirectory(Folder);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+            // Nunca deixe um config.json parcialmente gravado após falha ou desligamento.
+            var temp = FilePath + ".tmp";
+            try
+            {
+                File.WriteAllText(temp, JsonSerializer.Serialize(this, JsonOptions));
+                File.Move(temp, FilePath, overwrite: true);
+            }
+            finally
+            {
+                try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            }
         }
     }
 
     public Profile? FindProfile(string? name) =>
         Profiles.FirstOrDefault(p => string.Equals(p.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase));
 
-    public bool IsDisabled(string deviceName) =>
+    public bool IsDisabled(string deviceName, string stableId = "") =>
+        (!string.IsNullOrWhiteSpace(stableId) &&
+         DisabledDeviceIds.Any(id => string.Equals(id, stableId, StringComparison.OrdinalIgnoreCase))) ||
         DisabledDevices.Any(d => string.Equals(d, deviceName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Associa configurações antigas (baseadas no nome) à identidade física.
+    /// Só deve ser chamada quando há exatamente uma peça com esse nome.
+    /// </summary>
+    public bool BindDeviceIdentity(string name, string stableId)
+    {
+        if (string.IsNullOrWhiteSpace(stableId)) return false;
+        var changed = false;
+
+        foreach (var target in Overrides.Concat(Profiles.SelectMany(p => p.Overrides)))
+        {
+            if (!string.IsNullOrWhiteSpace(target.DeviceId) ||
+                !string.Equals(target.Device, name, StringComparison.OrdinalIgnoreCase)) continue;
+            target.DeviceId = stableId;
+            changed = true;
+        }
+
+        foreach (var correction in Corrections)
+        {
+            // Correções com nome parcial são regras intencionais para vários dispositivos.
+            if (!string.IsNullOrWhiteSpace(correction.DeviceId) ||
+                !string.Equals(correction.Device, name, StringComparison.OrdinalIgnoreCase)) continue;
+            correction.DeviceId = stableId;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(Temperature.TargetDeviceId) &&
+            string.Equals(Temperature.TargetDevice, name, StringComparison.OrdinalIgnoreCase))
+        {
+            Temperature.TargetDeviceId = stableId;
+            changed = true;
+        }
+
+        if (DisabledDevices.RemoveAll(d => string.Equals(d, name, StringComparison.OrdinalIgnoreCase)) > 0)
+        {
+            if (!DisabledDeviceIds.Contains(stableId, StringComparer.OrdinalIgnoreCase))
+                DisabledDeviceIds.Add(stableId);
+            changed = true;
+        }
+
+        return changed;
+    }
 
     private void Normalize()
     {
@@ -212,6 +278,7 @@ public sealed class AppConfig
         Corrections ??= new List<ZoneCorrection>();
         Overrides ??= new List<TargetColor>();
         DisabledDevices ??= new List<string>();
+        DisabledDeviceIds ??= new List<string>();
         Profiles ??= new List<Profile>();
         Schedule ??= new ScheduleSettings();
         Schedule.Rules ??= new List<ScheduleRule>();
@@ -230,6 +297,7 @@ public sealed class AppConfig
         Temperature.HotTemp = Math.Clamp(Temperature.HotTemp, Temperature.ColdTemp + 1, 120);
         Temperature.SensorId ??= "";
         Temperature.TargetDevice ??= "";
+        Temperature.TargetDeviceId ??= "";
         Temperature.TargetZone ??= "";
     }
 

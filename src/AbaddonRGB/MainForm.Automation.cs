@@ -16,6 +16,7 @@ internal sealed partial class MainForm
     private sealed class TargetItem
     {
         public string Device = "";
+        public string DeviceId = "";
         public string Zone = "";
         public string Text = "";
         public override string ToString() => Text;
@@ -129,6 +130,7 @@ internal sealed partial class MainForm
         {
             if (_syncing || !(_targetCombo.SelectedItem is TargetItem item)) return;
             _config.Temperature.TargetDevice = item.Device;
+            _config.Temperature.TargetDeviceId = item.DeviceId;
             _config.Temperature.TargetZone = item.Zone;
             SaveConfigQuietly();
             await RestartTemperatureAsync();
@@ -297,23 +299,26 @@ internal sealed partial class MainForm
         var seen = new List<string>();
         foreach (var device in _controller.Devices)
         {
-            if (seen.Contains(device.Name)) continue;
-            seen.Add(device.Name);
-            items.Add(new TargetItem { Device = device.Name, Text = device.Name + " (inteira)" });
+            if (seen.Contains(device.StableId)) continue;
+            seen.Add(device.StableId);
+            items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Text = device.Name + " (inteira)" });
             if (device.Zones.Count > 1)
                 foreach (var zone in device.Zones)
-                    items.Add(new TargetItem { Device = device.Name, Zone = zone.Name, Text = device.Name + "  ›  " + zone.Name });
+                    items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name, Text = device.Name + "  ›  " + zone.Name });
         }
 
         // Mantém o alvo salvo mesmo que a peça não esteja conectada agora.
         var current = items.FirstOrDefault(i =>
-            string.Equals(i.Device, settings.TargetDevice, StringComparison.OrdinalIgnoreCase) &&
+            (string.IsNullOrWhiteSpace(settings.TargetDeviceId)
+                ? string.Equals(i.Device, settings.TargetDevice, StringComparison.OrdinalIgnoreCase)
+                : string.Equals(i.DeviceId, settings.TargetDeviceId, StringComparison.OrdinalIgnoreCase)) &&
             string.Equals(i.Zone, settings.TargetZone, StringComparison.OrdinalIgnoreCase));
         if (current is null)
         {
             current = new TargetItem
             {
                 Device = settings.TargetDevice,
+                DeviceId = settings.TargetDeviceId,
                 Zone = settings.TargetZone,
                 Text = settings.TargetDevice + (settings.TargetZone.Length > 0 ? "  ›  " + settings.TargetZone : "") + " (não detectada)",
             };

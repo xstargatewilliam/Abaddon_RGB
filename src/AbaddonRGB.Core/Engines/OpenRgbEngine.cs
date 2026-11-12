@@ -42,13 +42,23 @@ public sealed class OpenRgbEngine : ILightingEngine
         if (_client is null) return Array.Empty<LightDevice>();
         try
         {
+            // Índices podem mudar após reiniciar o OpenRGB: nunca são a identidade da peça.
+            var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
             return _client.GetAllControllerData()
-                .Select(d => new LightDevice(
-                    EngineId,
-                    d.Index,
-                    d.Name,
-                    d.Zones.Select(z => new LightZone(z.Name, (int)z.LedCount)).ToArray(),
-                    d.Leds.Length))
+                .Select(d =>
+                {
+                    var zones = d.Zones.Select(z => new LightZone(z.Name, (int)z.LedCount)).ToArray();
+                    // O SDK fornece esses metadados conforme o dispositivo/protocolo.
+                    // Reflection mantém a leitura compatível com versões do modelo OpenRGB.NET.
+                    static string? Field(object obj, string name) =>
+                        obj.GetType().GetProperty(name)?.GetValue(obj)?.ToString();
+                    var id = DeviceIdentity.Create(d.Name, Field(d, "Vendor"),
+                        Field(d, "Serial"), Field(d, "Location"), d.Leds.Length, zones);
+                    occurrences.TryGetValue(id, out var occurrence);
+                    occurrences[id] = occurrence + 1;
+                    if (occurrence > 0) id += "-" + (occurrence + 1);
+                    return new LightDevice(EngineId, d.Index, d.Name, zones, d.Leds.Length, id);
+                })
                 .ToArray();
         }
         catch
@@ -67,8 +77,11 @@ public sealed class OpenRgbEngine : ILightingEngine
         try
         {
             // Coloca a peça no modo que aceita cor por LED. Só precisa uma vez por conexão.
-            if (_directModeSet.Add(device.Index))
+            if (!_directModeSet.Contains(device.Index))
+            {
                 _client.SetCustomMode(device.Index);
+                _directModeSet.Add(device.Index);
+            }
 
             var buffer = new Color[colors.Count];
             for (var i = 0; i < buffer.Length; i++)

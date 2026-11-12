@@ -25,6 +25,9 @@ internal sealed partial class MainForm : Form
     private readonly ToolTip _tips = new();
     private readonly Label _status = new();
     private readonly System.Windows.Forms.Timer _updateTimer = new();
+    private readonly System.Windows.Forms.Timer _healthTimer = new();
+    private bool _healthChecking;
+    private bool _connecting;
 
     private bool _allowVisible;
     private bool _exiting;
@@ -68,6 +71,12 @@ internal sealed partial class MainForm : Form
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _ = ConnectAndApplyAsync(applyAfterConnect: _config.ApplyOnStart);
 
+        // Detecta conexões perdidas e dispositivos que voltaram após suspensão
+        // ou reinício do servidor, sem depender de mudanças manuais de cor.
+        _healthTimer.Interval = 15000;
+        _healthTimer.Tick += async (_, _) => await CheckConnectionHealthAsync();
+        _healthTimer.Start();
+
         if (justUpdated)
         {
             _tray.ShowBalloonTip(4000, "Abaddon RGB atualizado",
@@ -93,6 +102,10 @@ internal sealed partial class MainForm : Form
 
     private async Task ConnectAndApplyAsync(bool applyAfterConnect)
     {
+        if (_connecting) return;
+        _connecting = true;
+        try
+        {
         // Na inicialização do Windows o OpenRGB pode demorar para subir: tenta por até ~3 minutos.
         const int attempts = 60;
         string? lastError = null;
@@ -137,6 +150,55 @@ internal sealed partial class MainForm : Form
         SetStatus("Não encontrei o OpenRGB. Confira se ele está aberto (ou instalado como serviço) " +
                   "com o servidor SDK ligado na porta " + _config.Port + ", e clique em Reconectar na aba Sistema." +
                   (lastError is null ? "" : $" Detalhe: {lastError}"));
+        }
+        finally { _connecting = false; }
+    }
+
+    /// <summary>
+    /// Verificação leve em segundo plano: redescobre dispositivos e recupera
+    /// motores ausentes. Nunca roda junto a uma aplicação de cor.
+    /// </summary>
+    private async Task CheckConnectionHealthAsync()
+    {
+        if (_exiting || _connecting || _healthChecking) return;
+        _healthChecking = true;
+        var acquired = false;
+        try
+        {
+            acquired = await _busy.WaitAsync(0);
+            if (!acquired) return;
+
+            var before = _controller.Devices.Select(d =>
+                $"{d.EngineId}:{d.Index}:{d.StableId}:{d.LedCount}").ToArray();
+            var wasConnected = _controller.IsConnected;
+
+            var connected = await Task.Run(() => _controller.Connect(out _));
+            if (_exiting) return;
+
+            var after = _controller.Devices.Select(d =>
+                $"{d.EngineId}:{d.Index}:{d.StableId}:{d.LedCount}").ToArray();
+            var changed = !before.SequenceEqual(after) || wasConnected != connected;
+            if (!changed) return;
+
+            RefreshDeviceViews();
+            _log.Info("Conexão/dispositivos alterados. Sincronizando estado RGB.");
+            if (connected && _config.ApplyOnStart)
+            {
+                // Solta o semáforo antes de chamar ApplyAsync.
+                _busy.Release();
+                acquired = false;
+                ApplyScheduleNow(announce: false);
+                await ApplyAsync();
+            }
+            else if (!connected)
+                SetStatus("Nenhum motor de iluminação conectado; reconexão automática ativa.");
+        }
+        catch (Exception ex) { _log.Warn("Verificação de conexão: " + ex.Message); }
+        finally
+        {
+            if (acquired) try { _busy.Release(); } catch (ObjectDisposedException) { }
+            _healthChecking = false;
+        }
     }
 
     /// <summary>Envia as cores atuais para as peças.</summary>
@@ -452,6 +514,7 @@ internal sealed partial class MainForm : Form
             _log.LineAdded -= OnLogLine;
             StopAutomations();
             _updateTimer.Dispose();
+            _healthTimer.Dispose();
             _tray.Dispose();
             _tips.Dispose();
             _controller.Dispose();
