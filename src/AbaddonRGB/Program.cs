@@ -32,7 +32,9 @@ internal static class Program
             if (exe is not null) Updater.CleanupOldVersion(exe);
 
             ApplicationConfiguration.Initialize();
-            Application.Run(new MainForm(startInTray, justUpdated));
+            Application.Run(new MainForm(startInTray, justUpdated,
+                sensorFactory: () => new WindowsTemperatureProvider(),
+                nativeProbe: NativeProbe.Run));
         }
         finally
         {

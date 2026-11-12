@@ -1,12 +1,9 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace AbaddonRGB.Core;
 
-/// <summary>
-/// Correção de ordem de cores para uma zona específica de um dispositivo.
-/// </summary>
+/// <summary>Correção de ordem de cores para uma zona específica de um dispositivo.</summary>
 public sealed class ZoneCorrection
 {
     /// <summary>Trecho do nome do dispositivo (sem diferenciar maiúsculas). Ex.: "ASRock".</summary>
@@ -25,37 +22,115 @@ public sealed class ZoneCorrection
         zoneName.Contains(Zone, StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// Configurações do Abaddon RGB, salvas em %APPDATA%\AbaddonRGB\config.json.
-/// </summary>
+/// <summary>Cor própria de uma peça inteira (Zone vazia) ou de uma zona dela.</summary>
+public sealed class TargetColor
+{
+    public string Device { get; set; } = "";
+    public string Zone { get; set; } = "";
+    public string Color { get; set; } = "#FFFFFF";
+
+    [JsonIgnore]
+    public bool IsWholeDevice => string.IsNullOrWhiteSpace(Zone);
+
+    public bool Matches(string deviceName, string zoneName) =>
+        string.Equals(Device, deviceName, StringComparison.OrdinalIgnoreCase) &&
+        (IsWholeDevice || string.Equals(Zone, zoneName, StringComparison.OrdinalIgnoreCase));
+
+    public bool SameTarget(string device, string zone) =>
+        string.Equals(Device, device, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(Zone ?? "", zone ?? "", StringComparison.OrdinalIgnoreCase);
+
+    public TargetColor Clone() => new() { Device = Device, Zone = Zone, Color = Color };
+}
+
+/// <summary>Um conjunto de cores salvo com nome (ex.: "Dia", "Noite").</summary>
+public sealed class Profile
+{
+    public string Name { get; set; } = "";
+    public string Color { get; set; } = "#3A6EA5";
+    public int Brightness { get; set; } = 100;
+    public List<TargetColor> Overrides { get; set; } = new();
+}
+
+public sealed class ScheduleRule
+{
+    /// <summary>Horário no formato 24h, "HH:mm".</summary>
+    public string Time { get; set; } = "22:00";
+    public string Profile { get; set; } = "";
+}
+
+public sealed class ScheduleSettings
+{
+    public bool Enabled { get; set; }
+    public List<ScheduleRule> Rules { get; set; } = new();
+}
+
+public sealed class TemperatureSettings
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>Identificador do sensor escolhido. Vazio = o primeiro sensor de CPU (ou o primeiro que existir).</summary>
+    public string SensorId { get; set; } = "";
+
+    public int ColdTemp { get; set; } = 40;
+    public int HotTemp { get; set; } = 80;
+    public string ColdColor { get; set; } = "#0040FF";
+    public string HotColor { get; set; } = "#FF0000";
+
+    /// <summary>Peça que mostra a temperatura. Vazio = todas.</summary>
+    public string TargetDevice { get; set; } = "";
+
+    /// <summary>Zona da peça. Vazio = a peça inteira.</summary>
+    public string TargetZone { get; set; } = "";
+}
+
+/// <summary>Configurações do Abaddon RGB, salvas em %APPDATA%\AbaddonRGB\config.json.</summary>
 public sealed class AppConfig
 {
+    private const int CurrentConfigVersion = 3;
+
     public string Host { get; set; } = "127.0.0.1";
     public int Port { get; set; } = 6742;
 
-    /// <summary>Última cor aplicada, em hexadecimal (#RRGGBB).</summary>
+    /// <summary>Cor geral atual, em hexadecimal (#RRGGBB).</summary>
     public string Color { get; set; } = "#3A6EA5";
 
     /// <summary>Brilho de 0 a 100.</summary>
     public int Brightness { get; set; } = 100;
 
-    /// <summary>Reaplica a última cor assim que o programa conecta ao OpenRGB.</summary>
+    /// <summary>Cores próprias de peças ou zonas, por cima da cor geral.</summary>
+    public List<TargetColor> Overrides { get; set; } = new();
+
+    /// <summary>Peças que o Abaddon RGB não deve tocar.</summary>
+    public List<string> DisabledDevices { get; set; } = new();
+
+    /// <summary>Reaplica as cores assim que o programa conecta.</summary>
     public bool ApplyOnStart { get; set; } = true;
 
     /// <summary>Procura e instala novas versões do GitHub sozinho.</summary>
     public bool AutoUpdate { get; set; } = true;
 
-    /// <summary>Versão do formato do arquivo, para migrar configurações antigas.</summary>
-    public int ConfigVersion { get; set; } = CurrentConfigVersion;
+    /// <summary>Modo de segurança: detecta as peças, mas não envia nada para elas.</summary>
+    public bool ReadOnly { get; set; }
 
-    private const int CurrentConfigVersion = 2;
+    public List<Profile> Profiles { get; set; } = new()
+    {
+        new Profile { Name = "Dia", Color = "#3A6EA5", Brightness = 100 },
+        new Profile { Name = "Noite", Color = "#FF6A00", Brightness = 25 },
+        new Profile { Name = "Apagado", Color = "#000000", Brightness = 0 },
+    };
+
+    public ScheduleSettings Schedule { get; set; } = new();
+    public TemperatureSettings Temperature { get; set; } = new();
 
     /// <summary>
-    /// Correções de ordem de cor por zona. Começa vazia: no modo usado pelo Abaddon RGB
-    /// (cor por LED), o cooler Rise Mode da ASRock já recebe as cores na ordem certa.
+    /// Correções de ordem de cor por zona. Começa vazia.
     /// Exemplo: { "Device": "ASRock", "Zone": "Addressable", "Order": "GRB" }.
     /// </summary>
     public List<ZoneCorrection> Corrections { get; set; } = new();
+
+    /// <summary>Versão do formato do arquivo, para migrar configurações antigas.</summary>
+    public int ConfigVersion { get; set; } = CurrentConfigVersion;
 
     [JsonIgnore]
     public static string Folder =>
@@ -64,11 +139,17 @@ public sealed class AppConfig
     [JsonIgnore]
     public static string FilePath => Path.Combine(Folder, "config.json");
 
+    [JsonIgnore]
+    public static string LogFolder => Path.Combine(Folder, "logs");
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+
+    private readonly object _saveLock = new();
 
     public static AppConfig Load()
     {
@@ -101,24 +182,55 @@ public sealed class AppConfig
         }
 
         var fresh = new AppConfig();
-        fresh.Save();
+        try { fresh.Save(); } catch { }
         return fresh;
     }
 
     public void Save()
     {
-        Normalize();
-        Directory.CreateDirectory(Folder);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+        lock (_saveLock)
+        {
+            Normalize();
+            Directory.CreateDirectory(Folder);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+        }
     }
+
+    public Profile? FindProfile(string? name) =>
+        Profiles.FirstOrDefault(p => string.Equals(p.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    public bool IsDisabled(string deviceName) =>
+        DisabledDevices.Any(d => string.Equals(d, deviceName, StringComparison.OrdinalIgnoreCase));
 
     private void Normalize()
     {
         Brightness = Math.Clamp(Brightness, 0, 100);
         if (Port is < 1 or > 65535) Port = 6742;
         if (string.IsNullOrWhiteSpace(Host)) Host = "127.0.0.1";
-        if (!TryParseHex(Color, out _, out _, out _)) Color = "#3A6EA5";
+        if (!RgbColor.TryParse(Color, out _)) Color = "#3A6EA5";
+
         Corrections ??= new List<ZoneCorrection>();
+        Overrides ??= new List<TargetColor>();
+        DisabledDevices ??= new List<string>();
+        Profiles ??= new List<Profile>();
+        Schedule ??= new ScheduleSettings();
+        Schedule.Rules ??= new List<ScheduleRule>();
+        Temperature ??= new TemperatureSettings();
+
+        Overrides.RemoveAll(o => o is null || string.IsNullOrWhiteSpace(o.Device) || !RgbColor.TryParse(o.Color, out _));
+        Profiles.RemoveAll(p => p is null || string.IsNullOrWhiteSpace(p.Name));
+        foreach (var profile in Profiles)
+        {
+            profile.Brightness = Math.Clamp(profile.Brightness, 0, 100);
+            if (!RgbColor.TryParse(profile.Color, out _)) profile.Color = "#3A6EA5";
+            profile.Overrides ??= new List<TargetColor>();
+        }
+
+        Temperature.ColdTemp = Math.Clamp(Temperature.ColdTemp, 0, 119);
+        Temperature.HotTemp = Math.Clamp(Temperature.HotTemp, Temperature.ColdTemp + 1, 120);
+        Temperature.SensorId ??= "";
+        Temperature.TargetDevice ??= "";
+        Temperature.TargetZone ??= "";
     }
 
     /// <summary>Ajusta configurações criadas por versões antigas. Retorna true se mudou algo.</summary>
@@ -126,11 +238,14 @@ public sealed class AppConfig
     {
         if (ConfigVersion >= CurrentConfigVersion) return false;
 
-        // v0.1 vinha com a correção GRB do cooler ASRock, que se mostrou desnecessária.
-        Corrections?.RemoveAll(c =>
-            string.Equals(c.Device, "ASRock", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(c.Zone, "Addressable", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(c.Order, "GRB", StringComparison.OrdinalIgnoreCase));
+        if (ConfigVersion < 2)
+        {
+            // v0.1 vinha com a correção GRB do cooler ASRock, que se mostrou desnecessária.
+            Corrections.RemoveAll(c =>
+                string.Equals(c.Device, "ASRock", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(c.Zone, "Addressable", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(c.Order, "GRB", StringComparison.OrdinalIgnoreCase));
+        }
 
         ConfigVersion = CurrentConfigVersion;
         return true;
@@ -138,20 +253,10 @@ public sealed class AppConfig
 
     public static bool TryParseHex(string? hex, out byte r, out byte g, out byte b)
     {
-        r = g = b = 0;
-        if (string.IsNullOrWhiteSpace(hex)) return false;
-
-        var value = hex.Trim().TrimStart('#');
-        if (value.Length != 6) return false;
-
-        if (!uint.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
-            return false;
-
-        r = (byte)((rgb >> 16) & 0xFF);
-        g = (byte)((rgb >> 8) & 0xFF);
-        b = (byte)(rgb & 0xFF);
-        return true;
+        var ok = RgbColor.TryParse(hex, out var color);
+        (r, g, b) = (color.R, color.G, color.B);
+        return ok;
     }
 
-    public static string ToHex(byte r, byte g, byte b) => $"#{r:X2}{g:X2}{b:X2}";
+    public static string ToHex(byte r, byte g, byte b) => new RgbColor(r, g, b).ToHex();
 }

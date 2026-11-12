@@ -9,9 +9,16 @@
     <RootNamespace>AbaddonRGB</RootNamespace>
     <AssemblyName>AbaddonRGB</AssemblyName>
     <Product>Abaddon RGB</Product>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Sensores de temperatura (CPU/GPU). A partir da 0.9.5 usa o PawnIO, não o WinRing0. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <!-- Lista os dispositivos USB (HID) para a detecção nativa. -->
+    <PackageReference Include="HidSharp" Version="2.6.4" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AbaddonRGB.Core\AbaddonRGB.Core.csproj" />

@@ -5,12 +5,30 @@ Ele usa o [OpenRGB](https://openrgb.org) como "motor": o OpenRGB conversa com o 
 
 ## O que o programa faz
 
-- Aplica uma cor em todos os dispositivos de uma vez (seletor de cor, hexadecimal ou cores rápidas).
-- Controla o brilho (0 a 100%).
-- **Corrige a ordem das cores por zona, se precisar.** Alguns LEDs ARGB leem as cores como G-R-B (vermelho e verde trocados). Dá para configurar a troca só na zona afetada (veja "Configurações").
-- Fica na bandeja do Windows (perto do relógio). O ícone mostra a cor atual.
-- Inicia com o Windows (opcional), escondido, e reaplica a última cor assim que o OpenRGB estiver disponível. Isso resolve as memórias que não guardam a cor sozinhas.
-- **Se atualiza sozinho** (a partir da v0.2): ao abrir e a cada 6 horas, procura uma release nova aqui no GitHub. Se encontrar, baixa, troca o `.exe` e reabre, reaplicando a cor. Dá para desligar em "Atualizar automaticamente" ou procurar na hora em "Procurar atualização".
+**Cores**
+- Uma cor geral para tudo (seletor, hexadecimal ou cores rápidas) e brilho de 0 a 100%.
+- Cor própria por peça ou por zona: o cooler de uma cor, a placa de outra, as memórias de outra.
+- "Não controlar esta peça": se uma peça der problema, o programa para de enviar comandos para ela.
+
+**Perfis**
+- Guarda a cor geral, o brilho e as cores próprias com um nome (já vem com Dia, Noite e Apagado).
+- Os perfis aparecem no menu do ícone perto do relógio.
+
+**Automações**
+- **Por horário:** "às 22:00 aplicar Noite, às 07:00 aplicar Dia". Ao abrir o programa (ou voltar da suspensão), ele aplica o perfil que deveria estar valendo naquela hora.
+- **Por temperatura:** escolhe um sensor (CPU ou placa de vídeo), uma cor para frio e outra para quente, e a peça que vai mostrar isso (tudo, uma peça ou uma zona, como o cooler). A cor vai mudando aos poucos entre as duas.
+
+**Sistema**
+- Fica na bandeja do Windows; o ícone mostra a cor atual.
+- Inicia com o Windows (opcional), escondido, e reaplica as cores. Também reaplica ao voltar da suspensão.
+- Se atualiza sozinho pelas releases do GitHub.
+- Modo somente leitura, registro do que foi feito e detecção nativa de teste (base para funcionar sem o OpenRGB: veja o [ROADMAP](ROADMAP.md)).
+
+### Sobre a temperatura
+
+- A leitura usa a biblioteca LibreHardwareMonitor, só com CPU e placa de vídeo ligadas.
+- **Placa de vídeo:** costuma funcionar sem nada extra.
+- **CPU (Ryzen):** o Windows só libera com o **PawnIO** instalado e o Abaddon RGB aberto **como administrador**. Sem isso o sensor aparece "sem leitura". Isso se resolve de vez na Fase 4 (serviço do Windows).
 
 ## Hardware testado
 
@@ -43,6 +61,13 @@ Ficam em `%APPDATA%\AbaddonRGB\config.json` (botão **Abrir configurações**):
   "Brightness": 100,
   "ApplyOnStart": true,
   "AutoUpdate": true,
+  "ReadOnly": false,
+  "Overrides": [ { "Device": "ASRock B450M Steel Legend", "Zone": "Addressable Header", "Color": "#00FF40" } ],
+  "DisabledDevices": [],
+  "Profiles": [ { "Name": "Noite", "Color": "#FF6A00", "Brightness": 25, "Overrides": [] } ],
+  "Schedule": { "Enabled": true, "Rules": [ { "Time": "22:00", "Profile": "Noite" } ] },
+  "Temperature": { "Enabled": false, "SensorId": "", "ColdTemp": 40, "HotTemp": 80,
+                   "ColdColor": "#0040FF", "HotColor": "#FF0000", "TargetDevice": "", "TargetZone": "" },
   "Corrections": []
 }
 ```
@@ -59,8 +84,8 @@ dotnet build AbaddonRGB.sln -c Release
 
 Estrutura:
 
-- `src/AbaddonRGB.Core`: conexão com o OpenRGB, correção de cores e configurações (sem interface).
-- `src/AbaddonRGB`: a janela e o ícone da bandeja (Windows Forms).
+- `src/AbaddonRGB.Core`: motores, composição das cores, perfis, automações, configurações e atualizador (sem interface).
+- `src/AbaddonRGB`: a janela, o ícone da bandeja, a leitura de sensores e a detecção nativa (Windows Forms).
 
 O GitHub Actions compila a cada push.
 
@@ -73,9 +98,6 @@ O GitHub Actions compila a cada push.
 
 Importante: o `.exe` precisa ficar numa pasta em que você tenha permissão de escrita (ex.: Documentos), não em `C:\Program Files`.
 
-## Próximas ideias
+## Próximos passos
 
-- Cor diferente por dispositivo/zona.
-- Efeitos animados (respiração, onda passando por todas as peças).
-- Perfis (trabalho, jogo, noite).
-- Reagir a música, uso de CPU ou temperatura.
+Veja o [ROADMAP](ROADMAP.md). A próxima etapa é a Fase 1: teclado e mouse Logitech sem o OpenRGB.
