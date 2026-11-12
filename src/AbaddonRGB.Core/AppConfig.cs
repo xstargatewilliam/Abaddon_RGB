@@ -42,6 +42,14 @@ public sealed class AppConfig
     /// <summary>Reaplica a última cor assim que o programa conecta ao OpenRGB.</summary>
     public bool ApplyOnStart { get; set; } = true;
 
+    /// <summary>Procura e instala novas versões do GitHub sozinho.</summary>
+    public bool AutoUpdate { get; set; } = true;
+
+    /// <summary>Versão do formato do arquivo, para migrar configurações antigas.</summary>
+    public int ConfigVersion { get; set; } = CurrentConfigVersion;
+
+    private const int CurrentConfigVersion = 2;
+
     /// <summary>
     /// Correções de ordem de cor por zona. Começa vazia: no modo usado pelo Abaddon RGB
     /// (cor por LED), o cooler Rise Mode da ASRock já recebe as cores na ordem certa.
@@ -72,7 +80,16 @@ public sealed class AppConfig
                 var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
                 if (config is not null)
                 {
+                    // Arquivos antigos não têm "ConfigVersion": nesse caso ele vale 0.
+                    using (var doc = JsonDocument.Parse(json))
+                    {
+                        if (!doc.RootElement.TryGetProperty(nameof(ConfigVersion), out _))
+                            config.ConfigVersion = 0;
+                    }
+
                     config.Normalize();
+                    if (config.Migrate())
+                        try { config.Save(); } catch { }
                     return config;
                 }
             }
@@ -102,6 +119,21 @@ public sealed class AppConfig
         if (string.IsNullOrWhiteSpace(Host)) Host = "127.0.0.1";
         if (!TryParseHex(Color, out _, out _, out _)) Color = "#3A6EA5";
         Corrections ??= new List<ZoneCorrection>();
+    }
+
+    /// <summary>Ajusta configurações criadas por versões antigas. Retorna true se mudou algo.</summary>
+    private bool Migrate()
+    {
+        if (ConfigVersion >= CurrentConfigVersion) return false;
+
+        // v0.1 vinha com a correção GRB do cooler ASRock, que se mostrou desnecessária.
+        Corrections?.RemoveAll(c =>
+            string.Equals(c.Device, "ASRock", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(c.Zone, "Addressable", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(c.Order, "GRB", StringComparison.OrdinalIgnoreCase));
+
+        ConfigVersion = CurrentConfigVersion;
+        return true;
     }
 
     public static bool TryParseHex(string? hex, out byte r, out byte g, out byte b)

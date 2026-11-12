@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # Botão "Run workflow" na aba Actions: compila e publica a versão do .csproj como release.
   workflow_dispatch:
 
 permissions:
@@ -34,9 +35,21 @@ jobs:
           name: AbaddonRGB-win-x64
           path: publish/AbaddonRGB.exe
 
-      - name: Criar release (só em tags v*)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Ler a versão do projeto
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content src/AbaddonRGB/AbaddonRGB.csproj
+          $version = @($project.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
+          if (-not $version) { throw "Não achei <Version> no AbaddonRGB.csproj" }
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Criar release (botão Run workflow ou tag v*)
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Abaddon RGB ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
           files: publish/AbaddonRGB.exe
           generate_release_notes: true

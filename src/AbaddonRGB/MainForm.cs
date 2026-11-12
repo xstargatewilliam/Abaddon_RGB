@@ -35,6 +35,10 @@ internal sealed class MainForm : Form
     private readonly Label _status = new();
     private readonly NotifyIcon _tray = new();
     private readonly ToolTip _tips = new();
+    private readonly CheckBox _autoUpdateCheck = new();
+    private readonly System.Windows.Forms.Timer _updateTimer = new();
+    private readonly Version _version = Updater.CurrentVersion(typeof(MainForm).Assembly);
+    private bool _updating;
 
     private System.Drawing.Color _current;
     private bool _allowVisible;
@@ -42,7 +46,7 @@ internal sealed class MainForm : Form
     private bool _trayHintShown;
     private Icon? _trayIcon;
 
-    public MainForm(bool startInTray)
+    public MainForm(bool startInTray, bool justUpdated = false)
     {
         _allowVisible = !startInTray;
         _config = AppConfig.Load();
@@ -60,7 +64,21 @@ internal sealed class MainForm : Form
         // para podermos atualizar a tela a partir das tarefas em segundo plano.
         _ = Handle;
         _ = ConnectAndApplyAsync(applyAfterConnect: _config.ApplyOnStart);
+
+        if (justUpdated)
+        {
+            _tray.ShowBalloonTip(4000, "Abaddon RGB atualizado",
+                $"Agora você está na versão {VersionText}.", ToolTipIcon.Info);
+        }
+
+        // Procura atualização 20 segundos depois de abrir e, depois, a cada 6 horas.
+        _updateTimer.Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds;
+        _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(manual: false);
+        _updateTimer.Start();
+        _ = CheckForUpdatesLaterAsync();
     }
+
+    private string VersionText => "v" + _version.ToString(3);
 
     // ---------------------------------------------------------------- interface
 
@@ -87,7 +105,7 @@ internal sealed class MainForm : Form
 
         var title = new Label
         {
-            Text = "Abaddon RGB",
+            Text = "Abaddon RGB  " + VersionText,
             Font = new Font("Segoe UI Semibold", 16f),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 2),
@@ -224,6 +242,24 @@ internal sealed class MainForm : Form
             }
         };
 
+        // Atualizações.
+        var updateRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
+        var updateButton = MakeButton("Procurar atualização");
+        updateButton.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
+        _autoUpdateCheck.Text = "Atualizar automaticamente";
+        _autoUpdateCheck.AutoSize = true;
+        _autoUpdateCheck.ForeColor = TextColor;
+        _autoUpdateCheck.Margin = new Padding(4, 6, 0, 0);
+        _autoUpdateCheck.Checked = _config.AutoUpdate;
+        _autoUpdateCheck.CheckedChanged += (_, _) =>
+        {
+            _config.AutoUpdate = _autoUpdateCheck.Checked;
+            try { _config.Save(); } catch { }
+        };
+        _tips.SetToolTip(_autoUpdateCheck, "Quando sair uma versão nova no GitHub, o programa baixa, instala e reabre sozinho.");
+        updateRow.Controls.Add(updateButton);
+        updateRow.Controls.Add(_autoUpdateCheck);
+
         // Lista de dispositivos.
         var devicesLabel = new Label { Text = "Dispositivos", ForeColor = MutedText, AutoSize = true };
         _devices.Width = 440;
@@ -247,6 +283,7 @@ internal sealed class MainForm : Form
         root.Controls.Add(_brightness);
         root.Controls.Add(actions);
         root.Controls.Add(_startupCheck);
+        root.Controls.Add(updateRow);
         root.Controls.Add(devicesLabel);
         root.Controls.Add(_devices);
         root.Controls.Add(_status);
@@ -259,6 +296,7 @@ internal sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Abrir Abaddon RGB", null, (_, _) => ShowWindow());
         menu.Items.Add("Reaplicar cor", null, async (_, _) => await ApplyAsync());
+        menu.Items.Add("Procurar atualização", null, async (_, _) => await CheckForUpdatesAsync(manual: true));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Sair", null, (_, _) => ExitApp());
 
@@ -479,6 +517,90 @@ internal sealed class MainForm : Form
         }
     }
 
+    // ---------------------------------------------------------------- atualização
+
+    private async Task CheckForUpdatesLaterAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(20));
+        if (!_exiting) await CheckForUpdatesAsync(manual: false);
+    }
+
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (_updating || _exiting) return;
+        if (!manual && !_config.AutoUpdate) return;
+
+        try
+        {
+            if (manual) SetStatus("Procurando atualização...");
+            var update = await Updater.CheckAsync(_version);
+
+            if (update is null)
+            {
+                if (manual) SetStatus($"Você já está na versão mais nova ({VersionText}).");
+                return;
+            }
+
+            var newVersion = "v" + update.Version.ToString(3);
+            if (manual)
+            {
+                var answer = MessageBox.Show(this,
+                    $"A versão {newVersion} está disponível (você tem a {VersionText}).\n\n" +
+                    "Instalar agora? O programa fecha e abre de novo sozinho, em poucos segundos.",
+                    "Abaddon RGB", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes)
+                {
+                    SetStatus($"Atualização {newVersion} disponível. Clique em Procurar atualização quando quiser instalar.");
+                    return;
+                }
+            }
+
+            await InstallUpdateAsync(update);
+        }
+        catch (Exception ex)
+        {
+            // Sem internet ou GitHub fora do ar: na checagem automática, fica quieto.
+            if (manual) SetStatus("Não consegui procurar atualização: " + ex.Message);
+        }
+    }
+
+    private async Task InstallUpdateAsync(UpdateInfo update)
+    {
+        var exe = Environment.ProcessPath;
+        if (exe is null || Path.GetFileName(exe).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus("Atualização encontrada, mas o programa está rodando em modo de desenvolvimento.");
+            return;
+        }
+
+        _updating = true;
+        try
+        {
+            var newVersion = "v" + update.Version.ToString(3);
+            SetStatus($"Baixando {newVersion}...");
+            _tray.Text = $"Abaddon RGB — baixando {newVersion}";
+
+            var downloaded = await Updater.DownloadAsync(update);
+
+            var arguments = Program.UpdatedArgument + (Visible ? "" : " " + StartupManager.TrayArgument);
+            Updater.InstallAndRestart(downloaded, exe, arguments);
+            ExitApp();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            SetStatus("Não tenho permissão para trocar o arquivo nesta pasta. Mova o AbaddonRGB.exe " +
+                      "para outra pasta (por exemplo, Documentos) e tente de novo.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("A atualização falhou: " + ex.Message);
+        }
+        finally
+        {
+            _updating = false;
+        }
+    }
+
     // ---------------------------------------------------------------- janela e bandeja
 
     protected override void SetVisibleCore(bool value)
@@ -534,6 +656,7 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _updateTimer.Dispose();
             _tray.Dispose();
             _tips.Dispose();
             _service.Dispose();

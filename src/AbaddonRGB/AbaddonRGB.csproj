@@ -9,7 +9,7 @@
     <RootNamespace>AbaddonRGB</RootNamespace>
     <AssemblyName>AbaddonRGB</AssemblyName>
     <Product>Abaddon RGB</Product>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
