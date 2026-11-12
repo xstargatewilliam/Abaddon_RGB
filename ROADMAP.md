@@ -40,3 +40,11 @@ Hoje a automação por horário troca de perfil de uma vez. A ideia é a cor e o
 - **07:00** — brilho no máximo, na cor selecionada.
 
 Como fazer: cada regra de horário ganha uma opção "transição até HH:mm". Entre os dois pontos, o programa mistura cor e brilho do perfil anterior com os do próximo, atualizando a cada minuto (ou menos). Os horários e as cores de cada ponto ficam configuráveis na aba Automações.
+
+### Horários com precisão de minutos
+
+As regras de horário já aceitam hora e minuto (ex.: 22:30). Garantir o mesmo na transição gradual: início e fim em qualquer minuto (ex.: apagar de 22:15 a 23:45), com a mistura de cor e brilho atualizada de minuto em minuto ou menos.
+
+### Melhorar a interface
+
+A interface da v0.3 é funcional, mas simples. Pontos a trabalhar: visual mais caprichado (ícones, espaçamento, identidade do Abaddon RGB), uma prévia do PC mostrando a cor de cada peça, edição das regras de horário numa linha do tempo e ajustes feitos a partir do uso real.
