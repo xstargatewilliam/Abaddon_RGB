@@ -525,7 +525,10 @@ internal sealed partial class MainForm
 
         // Na peça inteira, limpa também as cores próprias das zonas dela.
         if (tag.Zone.Length == 0)
-            _config.Overrides.RemoveAll(o => string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase));
+            _config.Overrides.RemoveAll(o =>
+                string.IsNullOrWhiteSpace(o.DeviceId)
+                    ? string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase)
+                    : string.Equals(o.DeviceId, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
         else
             _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
         await ApplyAsync();

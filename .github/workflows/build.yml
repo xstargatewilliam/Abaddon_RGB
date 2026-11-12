@@ -21,6 +21,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Executar testes do núcleo
+        run: dotnet run --project tests/AbaddonRGB.Core.Tests/AbaddonRGB.Core.Tests.csproj -c Release
+
       - name: Publicar AbaddonRGB.exe (arquivo único, não precisa instalar o .NET)
         run: >
           dotnet publish src/AbaddonRGB/AbaddonRGB.csproj
