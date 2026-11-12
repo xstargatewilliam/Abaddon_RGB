@@ -42,11 +42,12 @@ public sealed class AppConfig
     /// <summary>Reaplica a última cor assim que o programa conecta ao OpenRGB.</summary>
     public bool ApplyOnStart { get; set; } = true;
 
-    public List<ZoneCorrection> Corrections { get; set; } = new()
-    {
-        // Cooler Rise Mode no conector ARGB da ASRock B450M Steel Legend: vermelho e verde trocados.
-        new ZoneCorrection { Device = "ASRock", Zone = "Addressable", Order = "GRB" },
-    };
+    /// <summary>
+    /// Correções de ordem de cor por zona. Começa vazia: no modo usado pelo Abaddon RGB
+    /// (cor por LED), o cooler Rise Mode da ASRock já recebe as cores na ordem certa.
+    /// Exemplo: { "Device": "ASRock", "Zone": "Addressable", "Order": "GRB" }.
+    /// </summary>
+    public List<ZoneCorrection> Corrections { get; set; } = new();
 
     [JsonIgnore]
     public static string Folder =>

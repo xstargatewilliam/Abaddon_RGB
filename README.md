@@ -7,7 +7,7 @@ Ele usa o [OpenRGB](https://openrgb.org) como "motor": o OpenRGB conversa com o 
 
 - Aplica uma cor em todos os dispositivos de uma vez (seletor de cor, hexadecimal ou cores rápidas).
 - Controla o brilho (0 a 100%).
-- **Corrige a ordem das cores por zona.** O cooler Rise Mode ligado no conector ARGB da ASRock B450M Steel Legend lê as cores como G-R-B (vermelho e verde trocados). O programa troca os canais sozinho só nessa zona.
+- **Corrige a ordem das cores por zona, se precisar.** Alguns LEDs ARGB leem as cores como G-R-B (vermelho e verde trocados). Dá para configurar a troca só na zona afetada (veja "Configurações").
 - Fica na bandeja do Windows (perto do relógio). O ícone mostra a cor atual.
 - Inicia com o Windows (opcional), escondido, e reaplica a última cor assim que o OpenRGB estiver disponível. Isso resolve as memórias que não guardam a cor sozinhas.
 
@@ -16,7 +16,7 @@ Ele usa o [OpenRGB](https://openrgb.org) como "motor": o OpenRGB conversa com o 
 | Peça | Como aparece no OpenRGB | Observação |
 |---|---|---|
 | ASRock B450M Steel Legend | ASRock B450M Steel Legend | Controlada pelo SMBus (precisa do PawnIO) |
-| Water cooler Rise Mode (ARGB) | zona "Addressable Header" da placa | Ordem GRB; 1 cor por vez |
+| Water cooler Rise Mode (ARGB) | zona "Addressable Header" da placa | 1 cor por vez. No modo "Static" do OpenRGB as cores saem trocadas, mas pelo Abaddon RGB saem certas (sem correção) |
 | 2× RAM Asgard RGB | ENE DRAM | Não salva a cor no dispositivo |
 | Teclado Logitech G512 | G512 RGB MECHANICAL GAMING KEYBOARD | Feche o G HUB |
 | Mouse Logitech G305 | G305 Lightspeed Wireless Gaming Mouse | Feche o G HUB |
@@ -41,13 +41,11 @@ Ficam em `%APPDATA%\AbaddonRGB\config.json` (botão **Abrir configurações**):
   "Color": "#3A6EA5",
   "Brightness": 100,
   "ApplyOnStart": true,
-  "Corrections": [
-    { "Device": "ASRock", "Zone": "Addressable", "Order": "GRB" }
-  ]
+  "Corrections": []
 }
 ```
 
-Em `Corrections`, `Device` e `Zone` são trechos do nome que aparece no OpenRGB, e `Order` é a ordem em que os LEDs daquela zona leem as cores (`RGB`, `GRB`, `BRG`...). Para descobrir a ordem de uma peça nova: mande vermelho puro e veja que cor aparece.
+Para corrigir uma zona, adicione por exemplo `{ "Device": "ASRock", "Zone": "Addressable", "Order": "GRB" }` em `Corrections`. `Device` e `Zone` são trechos do nome que aparece no OpenRGB, e `Order` é a ordem em que os LEDs daquela zona leem as cores (`RGB`, `GRB`, `BRG`...). Para descobrir a ordem de uma peça nova: mande vermelho puro e veja que cor aparece.
 
 ## Compilar
 
