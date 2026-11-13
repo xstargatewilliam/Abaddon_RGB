@@ -61,6 +61,7 @@ internal sealed partial class MainForm
     private readonly TextBox _logBox = new();
     private readonly CheckBox _startupCheck = Ui.Check("Iniciar com o Windows (escondido, reaplicando as cores)");
     private readonly CheckBox _autoUpdateCheck = Ui.Check("Atualizar automaticamente");
+    private readonly CheckBox _adminCheck = Ui.Check("Como administrador (para ler a temperatura da CPU)");
     private readonly CheckBox _gammaCheck = Ui.Check("Corrigir a mistura das cores nos LEDs");
     private readonly CheckBox _readOnlyCheck = Ui.Check("Modo somente leitura (não envia nada às peças)");
 
@@ -825,12 +826,41 @@ internal sealed partial class MainForm
             if (!_config.ReadOnly) _ = ApplyAsync();
         };
 
-        try { _startupCheck.Checked = StartupManager.IsEnabled; } catch { }
+        try
+        {
+            _startupCheck.Checked = StartupManager.IsEnabled;
+            _adminCheck.Checked = StartupManager.StartsElevated;
+        }
+        catch { }
+
         _startupCheck.CheckedChanged += (_, _) =>
         {
-            try { StartupManager.SetEnabled(_startupCheck.Checked); }
-            catch (Exception ex) { SetStatus("Não consegui alterar a inicialização automática: " + ex.Message); }
+            if (_syncing) return;
+            ApplyStartupChoice();
         };
+        _adminCheck.CheckedChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            if (_adminCheck.Checked && !Elevation.IsAdministrator)
+            {
+                // Precisa estar como administrador para criar a tarefa: reabre e a pessoa marca de novo.
+                _syncing = true;
+                _adminCheck.Checked = false;
+                _syncing = false;
+                RestartAsAdministrator(reason: "Depois de reabrir, marque esta opção de novo.");
+                return;
+            }
+
+            if (_adminCheck.Checked && !_startupCheck.Checked)
+            {
+                _syncing = true;
+                _startupCheck.Checked = true;
+                _syncing = false;
+            }
+
+            ApplyStartupChoice();
+        };
+        _tips.SetToolTip(_adminCheck, "Necessário para ler a temperatura da CPU. Abre no login sem o aviso do Windows.");
 
         _autoUpdateCheck.Checked = _config.AutoUpdate;
         _autoUpdateCheck.CheckedChanged += (_, _) =>
@@ -844,6 +874,8 @@ internal sealed partial class MainForm
         updateButton.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
 
         optionsCard.Body.Controls.Add(_startupCheck);
+        _adminCheck.Margin = new Padding(20, 0, 0, 6);
+        optionsCard.Body.Controls.Add(_adminCheck);
         optionsCard.Body.Controls.Add(_autoUpdateCheck);
         optionsCard.Body.Controls.Add(_gammaCheck);
         optionsCard.Body.Controls.Add(_readOnlyCheck);
@@ -872,6 +904,52 @@ internal sealed partial class MainForm
         page.Controls.Add(logCard);
 
         return page;
+    }
+
+    private void ApplyStartupChoice()
+    {
+        try
+        {
+            StartupManager.SetEnabled(_startupCheck.Checked, _adminCheck.Checked);
+            _log.Info(!_startupCheck.Checked
+                ? "Inicialização com o Windows desligada."
+                : _adminCheck.Checked
+                    ? "Inicialização com o Windows ligada, como administrador."
+                    : "Inicialização com o Windows ligada.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Não consegui alterar a inicialização automática: " + ex.Message);
+            _log.Error("Inicialização automática: " + ex.Message);
+        }
+
+        _syncing = true;
+        try
+        {
+            _startupCheck.Checked = StartupManager.IsEnabled;
+            _adminCheck.Checked = StartupManager.StartsElevated;
+        }
+        catch { }
+        finally { _syncing = false; }
+    }
+
+    /// <summary>Fecha esta cópia e abre outra como administrador (o Windows pergunta antes).</summary>
+    private void RestartAsAdministrator(string reason = "")
+    {
+        if (Elevation.IsAdministrator)
+        {
+            SetStatus("O Abaddon RGB já está aberto como administrador.");
+            return;
+        }
+
+        if (!Elevation.RelaunchAsAdministrator(startInTray: !Visible))
+        {
+            SetStatus("O Windows não deu permissão de administrador (o aviso foi recusado).");
+            return;
+        }
+
+        _log.Info("Reabrindo como administrador. " + reason);
+        ExitApp();
     }
 
     private void RefreshEngineLabel()

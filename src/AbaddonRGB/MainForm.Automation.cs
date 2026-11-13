@@ -107,7 +107,16 @@ internal sealed partial class MainForm
         };
         var refreshSensors = Ui.Button("Atualizar");
         refreshSensors.Click += (_, _) => FillSensorCombo();
-        target.Controls.Add(Ui.Row(Ui.InlineLabel("Sensor"), _sensorCombo, refreshSensors));
+        var sensorRow = Ui.Row(Ui.InlineLabel("Sensor"), _sensorCombo, refreshSensors);
+        if (!Elevation.IsAdministrator)
+        {
+            var admin = Ui.Button("Ler a CPU (admin)");
+            admin.Click += (_, _) => RestartAsAdministrator();
+            _tips.SetToolTip(admin, "A temperatura da CPU só pode ser lida com o Abaddon RGB aberto como administrador. O Windows vai perguntar antes.");
+            sensorRow.Controls.Add(admin);
+        }
+
+        target.Controls.Add(sensorRow);
 
         var settings = _config.Temperature;
         _coldTemp = Ui.Number(0, 119, settings.ColdTemp);
@@ -484,8 +493,12 @@ internal sealed partial class MainForm
             if (sensor?.Value is null)
             {
                 _temperatureLive.Text = sensors.Count == 0
-                    ? "Nenhum sensor de temperatura encontrado. Para ler a CPU, abra o Abaddon RGB como administrador (com o PawnIO instalado)."
-                    : "O sensor escolhido está sem leitura. Escolha outro, ou abra o Abaddon RGB como administrador para ler a CPU.";
+                    ? (Elevation.IsAdministrator
+                        ? "Nenhum sensor de temperatura encontrado, mesmo como administrador. Confira se o PawnIO está instalado."
+                        : "Nenhum sensor de temperatura encontrado. Para ler a CPU, clique em \"Ler a CPU (admin)\".")
+                    : (Elevation.IsAdministrator
+                        ? "O sensor escolhido está sem leitura, mesmo como administrador. Confira se o PawnIO está instalado, ou escolha outro sensor."
+                        : "O sensor escolhido está sem leitura. A CPU só é lida como administrador: clique em \"Ler a CPU (admin)\".");
                 return;
             }
 

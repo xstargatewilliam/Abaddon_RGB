@@ -11,13 +11,15 @@ internal static class Program
     {
         var startInTray = HasArg(args, StartupManager.TrayArgument);
         var justUpdated = HasArg(args, UpdatedArgument);
+        var justElevated = HasArg(args, Elevation.ElevatedArgument);
 
         // Só uma cópia do programa aberta por vez. Logo depois de uma atualização,
         // a versão antiga ainda pode estar fechando: espera um pouco por ela.
         using var mutex = new Mutex(initiallyOwned: false, "AbaddonRGB_SingleInstance");
-        if (!TryAcquire(mutex, justUpdated ? TimeSpan.FromSeconds(20) : TimeSpan.Zero))
+        // O mesmo vale para a cópia aberta como administrador: a anterior está fechando.
+        if (!TryAcquire(mutex, justUpdated || justElevated ? TimeSpan.FromSeconds(20) : TimeSpan.Zero))
         {
-            if (!justUpdated)
+            if (!justUpdated && !justElevated)
             {
                 MessageBox.Show("O Abaddon RGB já está aberto. Procure o ícone perto do relógio.",
                     "Abaddon RGB", MessageBoxButtons.OK, MessageBoxIcon.Information);
