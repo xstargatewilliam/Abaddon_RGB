@@ -17,6 +17,8 @@ internal sealed partial class MainForm : Form
     private readonly AppConfig _config;
     private readonly AppLog _log;
     private readonly LightingController _controller;
+    private EffectRunner? _effects;
+    private long _lastPreviewTick;
     private readonly Func<ITemperatureProvider> _sensorFactory;
     private readonly Func<IReadOnlyList<string>> _nativeProbe;
     private readonly SemaphoreSlim _busy = new(1, 1);
@@ -72,6 +74,9 @@ internal sealed partial class MainForm : Form
         foreach (var line in _log.Recent) AppendLog(line);
 
         StartAutomations();
+        _effects = new EffectRunner(_controller,
+            () => _config.Temperature.Enabled ? _temperatureColor : null,
+            ShowEffectPreview);
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _ = ConnectAndApplyAsync(applyAfterConnect: _config.ApplyOnStart);
 
@@ -265,6 +270,24 @@ internal sealed partial class MainForm : Form
         {
             try { _busy.Release(); } catch (ObjectDisposedException) { }
         }
+    }
+
+    /// <summary>Anima a prévia do PC com o efeito (no máximo ~10 vezes por segundo, só com a janela aberta).</summary>
+    private void ShowEffectPreview(RgbColor color)
+    {
+        if (_exiting || !IsHandleCreated || !Visible) return;
+        var now = Environment.TickCount64;
+        if (now - _lastPreviewTick < 100) return;
+        _lastPreviewTick = now;
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                if (Effects.IsAnimated(_config.Effect))
+                    _pcPreview.SetLight(Ui.ToDrawing(color), _config.Brightness);
+            }));
+        }
+        catch { }
     }
 
     private static string Truncate(string text, int max) => text.Length <= max ? text : text.Substring(0, max);
@@ -521,6 +544,7 @@ internal sealed partial class MainForm : Form
             _healthTimer.Dispose();
             _tray.Dispose();
             _tips.Dispose();
+            _effects?.Dispose();
             _controller.Dispose();
             _busy.Dispose();
             if (_trayIcon is not null)

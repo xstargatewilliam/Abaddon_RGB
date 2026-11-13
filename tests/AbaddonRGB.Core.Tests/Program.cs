@@ -115,6 +115,46 @@ using (var controller = new LightingController(takeoverConfig, new ILightingEngi
     Check(controller.Devices.Single(d => d.HardwareKey == "usb:046D:C33C").EngineId == "openrgb", "Turning native off hands the keyboard back");
 }
 
+// ---- Efeitos
+var purple = new RgbColor(160, 32, 240);
+var breatheLow = Effects.ColorAt(LightEffect.Breathing, 5, 0, purple, 0, 0);
+var breatheHigh = Effects.ColorAt(LightEffect.Breathing, 5, (11.0 / 5 + 0.9) / 2, purple, 0, 0);
+Check(breatheLow.R < 20 && breatheHigh == purple, "Breathing goes from dim to full base color");
+Check(Effects.ColorAt(LightEffect.Spectrum, 5, 0, purple, 0.3, 1) == Effects.ColorAt(LightEffect.Spectrum, 5, 0, purple, 0.9, 7),
+    "Spectrum paints every LED the same at a given instant");
+Check(Effects.ColorAt(LightEffect.Wave, 5, 0, purple, 0.0, 0) != Effects.ColorAt(LightEffect.Wave, 5, 0, purple, 0.5, 0),
+    "Wave varies along the PC");
+var starColors = Enumerable.Range(0, 200).Select(k => Effects.ColorAt(LightEffect.Stars, 5, 1.0, purple, 0, k)).ToList();
+Check(starColors.Any(c => c.G > 150) && starColors.Count(c => c == starColors[0]) > 100, "Stars: mostly dim background, a few bright LEDs");
+Check(Effects.FromHue(0) == new RgbColor(255, 0, 0) && Effects.FromHue(1.0 / 3) == new RgbColor(0, 255, 0), "Hue wheel");
+
+var waveDevice = new LightDevice("x", 0, "Teclado", new[] { new LightZone("Teclas", 10), new LightZone("Logo", 1) }, 11, "kb");
+var ownLogo = new[] { new TargetColor { Device = "Teclado", DeviceId = "kb", Zone = "Logo", Color = "#FFFFFF" } };
+var waveColors = ColorComposer.Build(waveDevice, purple, 100, ownLogo, Array.Empty<ZoneCorrection>(), null, false,
+    led => Effects.ColorAt(LightEffect.Wave, 5, 0, purple, led / 11.0, led));
+Check(waveColors.Take(10).Distinct().Count() > 3 && waveColors[10] == new RgbColor(255, 255, 255),
+    "Effect animates the general color, own colors stay fixed");
+
+var effectConfig = new AppConfig { Effect = LightEffect.Spectrum, EffectSpeed = 8 };
+effectConfig.Profiles[0].Effect = LightEffect.Breathing;
+var effectEngine = new StaticEngine("openrgb",
+    new LightDevice("openrgb", 0, "ENE DRAM", new[] { new LightZone("DRAM", 5) }, 5, "ram-a"),
+    new LightDevice("openrgb", 1, "Fixa", new[] { new LightZone("Z", 1) }, 1, "fixa"));
+effectConfig.Overrides.Add(new TargetColor { Device = "Fixa", DeviceId = "fixa", Color = "#123456" });
+using (var controller = new LightingController(effectConfig, new ILightingEngine[] { effectEngine }, new AppLog(null)))
+{
+    controller.Connect(out _);
+    controller.Apply(effectFrame: true);
+    Check(effectEngine.Painted.Count == 2, "First effect frame paints everything");
+    effectEngine.Painted.Clear();
+    Thread.Sleep(80);
+    controller.Apply(effectFrame: true);
+    Check(effectEngine.Painted.ContainsKey(0) && !effectEngine.Painted.ContainsKey(1),
+        "Later frames skip parts whose color did not change");
+    controller.LoadProfile(effectConfig.Profiles[0].Name);
+    Check(effectConfig.Effect == LightEffect.Breathing, "Profiles carry the effect");
+}
+
 Console.WriteLine("AbaddonRGB.Core smoke tests passed.");
 
 sealed class StaticEngine : ILightingEngine

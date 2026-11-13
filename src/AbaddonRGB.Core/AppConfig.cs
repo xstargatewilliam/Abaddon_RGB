@@ -71,6 +71,8 @@ public sealed class Profile
     public string Name { get; set; } = "";
     public string Color { get; set; } = "#3A6EA5";
     public int Brightness { get; set; } = 100;
+    public LightEffect Effect { get; set; } = LightEffect.Static;
+    public int EffectSpeed { get; set; } = 5;
     public List<TargetColor> Overrides { get; set; } = new();
 }
 
@@ -135,6 +137,12 @@ public sealed class AppConfig
 
     /// <summary>Usa os drivers próprios (sem o OpenRGB) nas peças que já têm driver. Começa desligado.</summary>
     public bool UseNativeDrivers { get; set; }
+
+    /// <summary>Efeito atual (Estático = cor parada).</summary>
+    public LightEffect Effect { get; set; } = LightEffect.Static;
+
+    /// <summary>Velocidade do efeito, de 1 (lento) a 10 (rápido).</summary>
+    public int EffectSpeed { get; set; } = 5;
 
     /// <summary>
     /// ID de cada aparelho USB ("usb:046D:C33C") como o OpenRGB o via: quando o motor nativo
@@ -319,6 +327,8 @@ public sealed class AppConfig
         DisabledDevices ??= new List<string>();
         DisabledDeviceIds ??= new List<string>();
         Nicknames ??= new List<Nickname>();
+        EffectSpeed = Math.Clamp(EffectSpeed, Effects.MinSpeed, Effects.MaxSpeed);
+        if (!Enum.IsDefined(Effect)) Effect = LightEffect.Static;
         HardwareIds = HardwareIds is null
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(HardwareIds, StringComparer.OrdinalIgnoreCase);
@@ -333,6 +343,8 @@ public sealed class AppConfig
         Profiles.RemoveAll(p => p is null || string.IsNullOrWhiteSpace(p.Name));
         foreach (var profile in Profiles)
         {
+            profile.EffectSpeed = Math.Clamp(profile.EffectSpeed, Effects.MinSpeed, Effects.MaxSpeed);
+            if (!Enum.IsDefined(profile.Effect)) profile.Effect = LightEffect.Static;
             profile.Brightness = Math.Clamp(profile.Brightness, 0, 100);
             if (!RgbColor.TryParse(profile.Color, out _)) profile.Color = "#3A6EA5";
             profile.Overrides ??= new List<TargetColor>();

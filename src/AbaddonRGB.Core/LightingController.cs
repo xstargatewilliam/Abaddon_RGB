@@ -19,6 +19,17 @@ public sealed class LightingController : IDisposable
     private readonly Dictionary<string, string?> _errors = new();
     private List<LightDevice> _devices = new();
     private bool _nativeTakeoverLogged;
+    private readonly System.Diagnostics.Stopwatch _effectClock = System.Diagnostics.Stopwatch.StartNew();
+    private readonly Dictionary<string, RgbColor[]> _lastSent = new();
+    private readonly HashSet<string> _failing = new();
+
+    /// <summary>Cor do efeito no início do PC agora (para a prévia na tela).</summary>
+    public RgbColor EffectPreviewColor()
+    {
+        var baseColor = RgbColor.ParseOr(Config.Color, new RgbColor(58, 110, 165));
+        if (!Effects.IsAnimated(Config.Effect)) return baseColor;
+        return Effects.ColorAt(Config.Effect, Config.EffectSpeed, _effectClock.Elapsed.TotalSeconds, baseColor, 0.05, 0);
+    }
 
     public LightingController(AppConfig config, IEnumerable<ILightingEngine> engines, AppLog log)
     {
@@ -89,6 +100,8 @@ public sealed class LightingController : IDisposable
 
     private void RefreshDevicesLocked()
     {
+        // Peças redetectadas podem ter perdido as cores: o próximo quadro reenvia tudo.
+        _lastSent.Clear();
         var found = new List<LightDevice>();
         foreach (var engine in _engines.Where(e => e.IsConnected))
         {
@@ -218,7 +231,12 @@ public sealed class LightingController : IDisposable
     /// </summary>
     /// <param name="temperatureColor">Cor vinda da automação de temperatura, se estiver ativa.</param>
     /// <param name="onlyTemperatureTarget">Envia só para a peça que mostra a temperatura (economiza comandos).</param>
-    public IReadOnlyList<DeviceResult> Apply(RgbColor? temperatureColor = null, bool onlyTemperatureTarget = false)
+    /// <param name="effectFrame">
+    /// Quadro de efeito animado: só envia às peças cuja cor mudou desde o último envio,
+    /// e não repete no registro o mesmo erro a cada quadro.
+    /// </param>
+    public IReadOnlyList<DeviceResult> Apply(RgbColor? temperatureColor = null, bool onlyTemperatureTarget = false,
+        bool effectFrame = false)
     {
         lock (_lock)
         {
@@ -257,8 +275,19 @@ public sealed class LightingController : IDisposable
             var corrections = Config.Corrections.ToArray();
             var results = new List<DeviceResult>();
 
-            foreach (var device in _devices.ToArray())
+            // Efeito animado: a cor geral passa a variar LED a LED. Temperatura em tudo tem prioridade.
+            var effect = Config.Effect;
+            var animate = Effects.IsAnimated(effect) && !(temperatureColor is not null && temperatureEverywhere);
+            var seconds = _effectClock.Elapsed.TotalSeconds;
+            var devices = _devices.ToArray();
+            var totalLeds = Math.Max(devices.Sum(d => Math.Max(d.LedCount, 1)), 1);
+            var ledsBefore = 0;
+
+            foreach (var device in devices)
             {
+                var firstLed = ledsBefore;
+                ledsBefore += Math.Max(device.LedCount, 1);
+                var deviceSlot = Array.IndexOf(devices, device);
                 var engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
                 if (engine is null) continue;
 
@@ -274,8 +303,18 @@ public sealed class LightingController : IDisposable
                     continue;
                 }
 
+                Func<int, RgbColor>? baseForLed = null;
+                if (animate)
+                {
+                    var speed = Config.EffectSpeed;
+                    var fixedBase = baseColor;
+                    // Posição ao longo do PC: as peças em ordem, LED a LED (para a onda atravessar tudo).
+                    baseForLed = led => Effects.ColorAt(effect, speed, seconds, fixedBase,
+                        (firstLed + led + 0.5) / totalLeds, deviceSlot * 4096 + led);
+                }
+
                 var colors = ColorComposer.Build(device, baseColor, Config.Brightness, overrides, corrections, top,
-                    gamma: Config.GammaCorrection);
+                    gamma: Config.GammaCorrection, baseForLed: baseForLed);
                 if (colors.Length == 0)
                 {
                     results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true));
@@ -288,15 +327,25 @@ public sealed class LightingController : IDisposable
                     continue;
                 }
 
+                var cacheKey = device.EngineId + "|" + device.StableId + "|" + device.Index;
+                if (effectFrame && _lastSent.TryGetValue(cacheKey, out var previous) && previous.AsSpan().SequenceEqual(colors))
+                {
+                    results.Add(new DeviceResult(device.Name, engine.DisplayName, true));
+                    continue;
+                }
+
                 try
                 {
                     engine.SetColors(device, colors);
+                    _lastSent[cacheKey] = colors;
+                    if (_failing.Remove(cacheKey)) Log.Info($"{device.Name}: voltou a responder.");
                     results.Add(new DeviceResult(device.Name, engine.DisplayName, true));
                 }
                 catch (Exception ex)
                 {
+                    _lastSent.Remove(cacheKey);
                     results.Add(new DeviceResult(device.Name, engine.DisplayName, false, ex.Message));
-                    Log.Error($"{device.Name}: {ex.Message}");
+                    if (!effectFrame || _failing.Add(cacheKey)) Log.Error($"{device.Name}: {ex.Message}");
                     if (!engine.IsConnected)
                     {
                         // O motor caiu: esquece as peças dele para redescobrir na próxima conexão.
@@ -320,6 +369,8 @@ public sealed class LightingController : IDisposable
 
             Config.Color = profile.Color;
             Config.Brightness = profile.Brightness;
+            Config.Effect = profile.Effect;
+            Config.EffectSpeed = profile.EffectSpeed;
             Config.Overrides = profile.Overrides.Select(o => o.Clone()).ToList();
             try { Config.Save(); } catch { }
             Log.Info($"Perfil \"{profile.Name}\" carregado ({profile.Color}, brilho {profile.Brightness}%).");
@@ -342,6 +393,8 @@ public sealed class LightingController : IDisposable
 
             profile.Color = Config.Color;
             profile.Brightness = Config.Brightness;
+            profile.Effect = Config.Effect;
+            profile.EffectSpeed = Config.EffectSpeed;
             profile.Overrides = Config.Overrides.Select(o => o.Clone()).ToList();
             try { Config.Save(); } catch { }
             Log.Info($"Perfil \"{profile.Name}\" salvo.");

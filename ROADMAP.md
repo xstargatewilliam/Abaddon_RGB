@@ -30,6 +30,10 @@ Enquanto isso, ela continua pelo motor OpenRGB.
 
 ## Ideias anotadas para as próximas versões
 
+### Efeitos básicos (v0.5.1)
+
+Feitos pelo próprio programa, em qualquer peça: Estático, Respiração, Ciclo de cores, Onda arco-íris e Estrelas, com velocidade de 1 a 10. Próximos: efeitos por tecla no teclado (a ordem dos LEDs do teclado ainda não é a posição física, então a onda passa "embaralhada" nele), reagir à música e transição por horário.
+
 ### Transição gradual por horário ("nascer e pôr do sol")
 
 Hoje a automação por horário troca de perfil de uma vez. A ideia é a cor e o brilho mudarem aos poucos ao longo do dia:

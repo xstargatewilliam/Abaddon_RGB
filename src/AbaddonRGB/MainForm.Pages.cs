@@ -50,6 +50,9 @@ internal sealed partial class MainForm
     private readonly Label _brightnessLabel = new();
     private readonly PcPreview _pcPreview = new();
     private readonly TreeView _tree = new();
+    private readonly ComboBox _effectCombo = Ui.Combo(268);
+    private readonly NeonSlider _speedSlider = new();
+    private readonly Label _speedLabel = new();
     private NeonButton _toggleControlButton = null!;
 
     // Perfis
@@ -300,8 +303,45 @@ internal sealed partial class MainForm
 
         // ---- Prévia do PC
         var pcCard = new Card("Seu PC", 480, 0, 368, 330);
-        _pcPreview.Bounds = new Rectangle(34, 30, 300, 292);
+        _pcPreview.Bounds = new Rectangle(74, 30, 220, 212);
         pcCard.Controls.Add(_pcPreview);
+
+        var effectLabel = Ui.InlineLabel("Efeito");
+        effectLabel.Location = new Point(18, 254);
+        pcCard.Controls.Add(effectLabel);
+
+        _effectCombo.Location = new Point(82, 250);
+        _effectCombo.Margin = new Padding(0);
+        foreach (var effect in Effects.All) _effectCombo.Items.Add(Effects.DisplayName(effect));
+        _effectCombo.SelectedIndex = Math.Max(Array.IndexOf(Effects.All, _config.Effect), 0);
+        _effectCombo.SelectedIndexChanged += async (_, _) =>
+        {
+            if (_syncing || _effectCombo.SelectedIndex < 0) return;
+            _config.Effect = Effects.All[_effectCombo.SelectedIndex];
+            _log.Info("Efeito: " + Effects.DisplayName(_config.Effect) + ".");
+            UpdateEffectHint();
+            SyncColorUi();
+            await ApplyAsync();
+        };
+        pcCard.Controls.Add(_effectCombo);
+
+        _speedLabel.AutoSize = true;
+        _speedLabel.ForeColor = Ui.Muted;
+        _speedLabel.Font = Ui.Body(8f, semibold: true);
+        _speedLabel.Location = new Point(18, 286);
+        pcCard.Controls.Add(_speedLabel);
+
+        _speedSlider.Bounds = new Rectangle(128, 282, 222, 26);
+        _speedSlider.ValueChanged += (_, _) =>
+        {
+            _speedLabel.Text = $"VELOCIDADE  {SpeedFromSlider()}";
+            if (_syncing) return;
+            _config.EffectSpeed = SpeedFromSlider();
+        };
+        _speedSlider.Committed += (_, _) => { try { _config.Save(); } catch { } };
+        pcCard.Controls.Add(_speedSlider);
+        UpdateEffectHint();
+
         page.Controls.Add(pcCard);
 
         // ---- Peças
@@ -354,6 +394,24 @@ internal sealed partial class MainForm
         return page;
     }
 
+    private int SpeedFromSlider() =>
+        Effects.MinSpeed + (int)Math.Round(_speedSlider.Value * (Effects.MaxSpeed - Effects.MinSpeed) / 100.0);
+
+    private void UpdateEffectHint()
+    {
+        var animated = Effects.IsAnimated(_config.Effect);
+        _speedSlider.Enabled = animated;
+        _speedLabel.ForeColor = animated ? Ui.Muted : Color.FromArgb(90, Ui.Muted);
+        _tips.SetToolTip(_effectCombo, _config.Effect switch
+        {
+            LightEffect.Breathing => "A cor geral acende e apaga devagar.",
+            LightEffect.Spectrum => "Todas as peças passam juntas por todas as cores (ignora a cor geral).",
+            LightEffect.Wave => "Um arco-íris corre pelas peças, uma depois da outra (ignora a cor geral).",
+            LightEffect.Stars => "Fundo fraco na cor geral, com LEDs piscando em branco.",
+            _ => "Cor parada.",
+        });
+    }
+
     private static string IconFor(string deviceName)
     {
         var name = deviceName.ToUpperInvariant();
@@ -383,6 +441,9 @@ internal sealed partial class MainForm
             _brightnessLabel.Text = $"BRILHO  {_brightness.Value}%";
             if (moveWheel) _wheel.ShowColor(color);
             _pcPreview.SetLight(color, _config.Brightness);
+            _effectCombo.SelectedIndex = Math.Max(Array.IndexOf(Effects.All, _config.Effect), 0);
+            _speedSlider.Value = (_config.EffectSpeed - Effects.MinSpeed) * 100 / (Effects.MaxSpeed - Effects.MinSpeed);
+            _speedLabel.Text = $"VELOCIDADE  {_config.EffectSpeed}";
             UpdateTrayIcon(color);
         }
         finally
@@ -747,6 +808,7 @@ internal sealed partial class MainForm
         foreach (var profile in _config.Profiles)
         {
             var extra = profile.Overrides.Count > 0 ? $", {profile.Overrides.Count} cor(es) própria(s)" : "";
+            if (Effects.IsAnimated(profile.Effect)) extra += $", efeito {Effects.DisplayName(profile.Effect)}";
             _profileList.Items.Add($"{profile.Name}   —   {profile.Color}, brilho {profile.Brightness}%{extra}");
         }
 
