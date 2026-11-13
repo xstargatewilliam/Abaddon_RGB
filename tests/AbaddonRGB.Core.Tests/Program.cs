@@ -1,6 +1,7 @@
 using AbaddonRGB.Core;
 using AbaddonRGB.Core.Automation;
 using AbaddonRGB.Core.Engines;
+using AbaddonRGB.Core.Engines.Native;
 
 static void Check(bool condition, string message)
 {
@@ -48,4 +49,172 @@ Check(Updater.ParseLatestRelease(release)?.ChecksumUrl == "https://example.com/a
     "Updater requires accompanying checksum");
 Check(Updater.ParseLatestRelease(release.Replace("AbaddonRGB.exe.sha256", "missing")) is null,
     "Unverified release must not be selected");
+// ---- Fase 1: teclado Logitech com cor por tecla (0x8080), com um teclado simulado
+var keyboard = new FakeG512();
+var backend = new FakeBackend(keyboard);
+var driver = new LogitechKeyboardDriver(backend);
+var detected = driver.Detect("native", 0);
+Check(detected.Count == 1, "Native driver finds the simulated G512");
+var kb = detected[0];
+Check(kb.Zones.Count == 2 && kb.Zones[0].Name == "Teclas" && kb.Zones[0].LedCount == FakeG512.MainKeys.Length,
+    "Main key zone lists every key the keyboard reported");
+Check(kb.Zones[1].Name == "Indicadores" && kb.Zones[1].LedCount == 2, "Only the two real G512 indicators are kept");
+Check(kb.HardwareKey == "usb:046D:C33C", "Hardware key comes from the HID path");
+Check(keyboard.Writes.All(w => w[0] == 0x11), "Discovery only sends requests, never color writes");
+
+var paint = Enumerable.Repeat(new RgbColor(0x12, 0x34, 0x56), kb.LedCount).ToArray();
+driver.SetColors(kb, paint);
+var frames = keyboard.Writes.Where(w => w[0] == 0x12).ToList();
+Check(frames.Count == (FakeG512.MainKeys.Length + 13) / 14 + 1, "Keys go out 14 per very-long frame, per key type");
+Check(frames.All(f => f[1] == 0xFF && f[2] == FakeG512.Index && f[3] == (0x30 | HidPpChannel.SoftwareId)),
+    "Frames use fn3 SetKeyColors on the discovered feature index");
+var firstFrame = frames[0];
+Check(firstFrame[4] == 0x00 && firstFrame[5] == 0x01 && firstFrame[7] == 14 &&
+      firstFrame[8] == FakeG512.MainKeys[0] && firstFrame[9] == 0x12 && firstFrame[10] == 0x34 && firstFrame[11] == 0x56,
+    "Frame layout: keyType, count, then keyId R G B");
+Check(keyboard.Painted.Count == kb.LedCount && keyboard.Painted.Values.All(c => c == (0x12, 0x34, 0x56)),
+    "Every key received the color");
+Check(keyboard.Flushes == 2, "Busy flush is retried until the keyboard applies it");
+
+keyboard.Unplugged = true;
+var threw = false;
+try { driver.SetColors(kb, paint); } catch (IOException) { threw = true; }
+Check(threw, "Unplugged keyboard surfaces as an error");
+
+Check(new LightDevice("openrgb", 0, "x", zones, 3, "id",
+    @"HID: \\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1&0&0002#{4d1e55b2}").HardwareKey == "usb:046D:C33C",
+    "OpenRGB HID location maps to the same hardware key");
+Check(new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1e76927f&0&0002#{x}", 0x46D, 0xC33C, 20, 20, "", "").InterfaceKey ==
+      new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col04#8&1e76927f&0&0003#{x}", 0x46D, 0xC33C, 64, 64, "", "").InterfaceKey,
+    "Collections of the same interface pair up");
+
+// ---- Motor nativo assume a peça que o OpenRGB também via, herdando o ID dela
+var takeoverConfig = new AppConfig { UseNativeDrivers = false };
+var openRgbKb = new LightDevice("openrgb", 3, "G512 RGB MECHANICAL GAMING KEYBOARD", new[] { new LightZone("Keyboard", 105) }, 105,
+    "openrgb-id-g512", @"HID: \\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1&0&0002#{x}");
+var ram = new LightDevice("openrgb", 1, "ENE DRAM", new[] { new LightZone("DRAM", 5) }, 5, "ram-id", "I2C: PIIX4 #0, Address 0x71");
+var fakeOpenRgb = new StaticEngine("openrgb", openRgbKb, ram);
+var nativeEngine = new NativeEngine(new INativeDriver[] { new LogitechKeyboardDriver(new FakeBackend(new FakeG512())) });
+takeoverConfig.Overrides.Add(new TargetColor { Device = openRgbKb.Name, DeviceId = "openrgb-id-g512", Color = "#00FF00" });
+using (var controller = new LightingController(takeoverConfig, new ILightingEngine[] { fakeOpenRgb, nativeEngine }, new AppLog(null)))
+{
+    Check(controller.Connect(out _), "Controller connects");
+    Check(!nativeEngine.IsConnected && controller.Devices.Count == 2, "Native engine stays off until enabled");
+    Check(takeoverConfig.HardwareIds["usb:046D:C33C"] == "openrgb-id-g512", "OpenRGB ID remembered per USB device");
+
+    controller.SetNativeEnabled(true);
+    var keyboards = controller.Devices.Where(d => d.HardwareKey == "usb:046D:C33C").ToList();
+    Check(keyboards.Count == 1 && keyboards[0].EngineId == "native", "Only the native copy of the keyboard remains");
+    Check(keyboards[0].StableId == "openrgb-id-g512", "Native keyboard inherits the OpenRGB ID");
+    Check(controller.Devices.Any(d => d.Name == "ENE DRAM" && d.EngineId == "openrgb"), "Other parts stay on OpenRGB");
+    var results = controller.Apply();
+    Check(results.All(r => r.Success), "Apply works across both engines");
+    Check(fakeOpenRgb.Painted.ContainsKey(1) && !fakeOpenRgb.Painted.ContainsKey(3), "OpenRGB no longer writes to the keyboard");
+
+    controller.SetNativeEnabled(false);
+    Check(controller.Devices.Single(d => d.HardwareKey == "usb:046D:C33C").EngineId == "openrgb", "Turning native off hands the keyboard back");
+}
+
 Console.WriteLine("AbaddonRGB.Core smoke tests passed.");
+
+sealed class StaticEngine : ILightingEngine
+{
+    private readonly LightDevice[] _devices;
+    public readonly Dictionary<int, RgbColor[]> Painted = new();
+    public StaticEngine(string id, params LightDevice[] devices) { Id = id; _devices = devices; }
+    public string Id { get; }
+    public string DisplayName => Id;
+    public bool IsConnected { get; private set; }
+    public bool TryConnect(out string? error) { error = null; IsConnected = true; return true; }
+    public IReadOnlyList<LightDevice> GetDevices() => _devices;
+    public void SetColors(LightDevice device, IReadOnlyList<RgbColor> colors) => Painted[device.Index] = colors.ToArray();
+    public void Dispose() { }
+}
+
+/// <summary>G512 simulado: responde ao HID++ 2.0 como o teclado real (recursos 0x0000 e 0x8080).</summary>
+sealed class FakeG512 : IHidLink
+{
+    public const byte Index = 0x0C;
+    public static readonly byte[] MainKeys = Enumerable.Range(0x04, 100).Select(i => (byte)i).ToArray();
+    private static readonly byte[] Indicators = { 0x01, 0x02, 0x03, 0x04, 0x05 };
+
+    private readonly Queue<byte[]> _inbox = new();
+    public readonly List<byte[]> Writes = new();
+    public readonly Dictionary<(ushort, byte), (byte, byte, byte)> Painted = new();
+    public int Flushes;
+    public bool Unplugged;
+    private bool _busyOnce = true;
+
+    public bool IsOpen => !Unplugged;
+    public void Drain() => _inbox.Clear();
+    public byte[]? Read(int timeoutMs) => _inbox.Count > 0 ? _inbox.Dequeue() : null;
+    public void Dispose() { }
+
+    public void WriteLong(byte[] r) => Handle(r);
+    public void WriteVeryLong(byte[] r) => Handle(r);
+
+    private void Reply(byte report, byte feature, byte fn, params byte[] data)
+    {
+        var buf = new byte[report == 0x12 ? 64 : 20];
+        buf[0] = report; buf[1] = 0xFF; buf[2] = feature; buf[3] = fn;
+        Array.Copy(data, 0, buf, 4, Math.Min(data.Length, buf.Length - 4));
+        _inbox.Enqueue(buf);
+    }
+
+    private void Handle(byte[] r)
+    {
+        if (Unplugged) throw new IOException("device removed");
+        Writes.Add(r);
+        byte feature = r[2], fn = r[3];
+        if (feature == 0x00 && (fn & 0xF0) == 0x00)
+        {
+            Reply(0x11, 0x00, fn, r[4] == 0x80 && r[5] == 0x80 ? Index : (byte)0, 0, 1);
+            return;
+        }
+
+        if (feature != Index) { Reply(0x11, 0xFF, feature, fn, 0x02); return; }
+        ushort kt = (ushort)((r[4] << 8) | r[5]);
+        byte[] ids = kt == 0x0001 ? MainKeys : kt == 0x0040 ? Indicators : Array.Empty<byte>();
+        switch (fn & 0xF0)
+        {
+            case 0x00: Reply(0x11, feature, fn, 0x00, 0x41, 0, 0, 2, 0, 120); break;
+            case 0x10: Reply(0x11, feature, fn, (byte)(ids.Length >> 8), (byte)ids.Length, 0, 0, 0); break;
+            case 0x20:
+            {
+                int start = (r[6] << 8) | r[7];
+                var data = new List<byte> { r[4], r[5], r[6], r[7] };
+                foreach (var id in ids.Skip(start).Take(14)) data.AddRange(new byte[] { id, 0, 0, 0 });
+                Reply(0x12, feature, fn, data.ToArray());
+                break;
+            }
+            case 0x30:
+            {
+                int count = (r[6] << 8) | r[7];
+                for (int k = 0; k < count; k++)
+                    Painted[(kt, r[8 + k * 4])] = (r[9 + k * 4], r[10 + k * 4], r[11 + k * 4]);
+                Reply(0x11, feature, fn);
+                break;
+            }
+            case 0x50:
+                Flushes++;
+                if (_busyOnce) { _busyOnce = false; Reply(0x11, 0xFF, feature, fn, 0x08); }
+                else Reply(0x11, feature, fn);
+                break;
+        }
+    }
+}
+
+sealed class FakeBackend : IHidBackend
+{
+    private readonly FakeG512 _keyboard;
+    public FakeBackend(FakeG512 keyboard) => _keyboard = keyboard;
+
+    public IReadOnlyList<HidCollectionInfo> Find(int vendorId, IReadOnlyCollection<int> productIds) => new[]
+    {
+        new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col02#8&1&0&0001#{x}", 0x046D, 0xC33C, 0, 3, "G512", "SN1"),
+        new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1&0&0002#{x}", 0x046D, 0xC33C, 20, 20, "G512 RGB MECHANICAL GAMING KEYBOARD", "SN1"),
+        new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col04#8&1&0&0003#{x}", 0x046D, 0xC33C, 64, 64, "G512 RGB MECHANICAL GAMING KEYBOARD", "SN1"),
+    };
+
+    public IHidLink Open(HidCollectionInfo a, HidCollectionInfo b) => _keyboard;
+}

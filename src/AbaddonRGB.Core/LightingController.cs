@@ -18,6 +18,7 @@ public sealed class LightingController : IDisposable
     private readonly List<ILightingEngine> _engines;
     private readonly Dictionary<string, string?> _errors = new();
     private List<LightDevice> _devices = new();
+    private bool _nativeTakeoverLogged;
 
     public LightingController(AppConfig config, IEnumerable<ILightingEngine> engines, AppLog log)
     {
@@ -48,6 +49,8 @@ public sealed class LightingController : IDisposable
             error = null;
             foreach (var engine in _engines)
             {
+                if (engine.Id == NativeEngine.EngineId && !Config.UseNativeDrivers) continue;
+
                 if (engine.IsConnected)
                 {
                     _errors[engine.Id] = null;
@@ -100,6 +103,40 @@ public sealed class LightingController : IDisposable
             }
         }
 
+        // Lembra o ID que o OpenRGB dá a cada aparelho USB, para o motor nativo herdar.
+        var idsChanged = false;
+        foreach (var device in found.Where(d => d.EngineId != NativeEngine.EngineId && d.HardwareKey.Length > 0))
+        {
+            if (Config.HardwareIds.TryGetValue(device.HardwareKey, out var known) && known == device.StableId) continue;
+            Config.HardwareIds[device.HardwareKey] = device.StableId;
+            idsChanged = true;
+        }
+
+        // A mesma peça vista pelo motor nativo e pelo OpenRGB: fica só a do nativo, com o ID antigo.
+        var nativeKeys = found.Where(d => d.EngineId == NativeEngine.EngineId && d.HardwareKey.Length > 0)
+            .Select(d => d.HardwareKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (nativeKeys.Count > 0)
+        {
+            var before = found.Count;
+            found = found
+                .Where(d => d.EngineId == NativeEngine.EngineId || !nativeKeys.Contains(d.HardwareKey))
+                .Select(d => d.EngineId == NativeEngine.EngineId && d.HardwareKey.Length > 0 &&
+                             Config.HardwareIds.TryGetValue(d.HardwareKey, out var inherited)
+                    ? d with { StableId = inherited }
+                    : d)
+                .ToList();
+            if (found.Count != before && !_nativeTakeoverLogged)
+            {
+                _nativeTakeoverLogged = true;
+                Log.Info($"Motor nativo assumiu {before - found.Count} peça(s) que o OpenRGB também via.");
+            }
+        }
+
+        if (idsChanged)
+        {
+            try { Config.Save(); } catch { }
+        }
+
         // Um único motor pode escrever em cada dispositivo físico. Quando ambos
         // reconhecem o mesmo ID, o motor nativo tem prioridade.
         var unique = found.GroupBy(d => string.IsNullOrWhiteSpace(d.StableId)
@@ -129,6 +166,38 @@ public sealed class LightingController : IDisposable
                     (string.IsNullOrWhiteSpace(d.Location) ? "" : $", {d.Location}") + $", {d.StableId}]"))));
 
         _devices = unique;
+    }
+
+    /// <summary>Liga ou desliga o motor nativo e redetecta as peças.</summary>
+    public void SetNativeEnabled(bool enabled)
+    {
+        lock (_lock)
+        {
+            Config.UseNativeDrivers = enabled;
+            _nativeTakeoverLogged = false;
+            var native = _engines.OfType<NativeEngine>().FirstOrDefault();
+            if (native is null) return;
+
+            if (enabled)
+            {
+                try
+                {
+                    if (native.TryConnect(out var error)) Log.Info("Motor nativo: ligado.");
+                    else Log.Warn("Motor nativo: " + error);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Motor nativo: " + ex.Message);
+                }
+            }
+            else
+            {
+                native.Disconnect();
+                Log.Info("Motor nativo: desligado. As peças voltam para o OpenRGB.");
+            }
+
+            RefreshDevicesLocked();
+        }
     }
 
     public IReadOnlyList<EngineStatus> GetEngineStatus()

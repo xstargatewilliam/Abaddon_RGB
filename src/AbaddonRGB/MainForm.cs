@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using AbaddonRGB.Core;
 using AbaddonRGB.Core.Automation;
 using AbaddonRGB.Core.Engines;
+using AbaddonRGB.Core.Engines.Native;
 using Microsoft.Win32;
 
 namespace AbaddonRGB;
@@ -48,7 +49,10 @@ internal sealed partial class MainForm : Form
         _controller = new LightingController(_config, new ILightingEngine[]
         {
             new OpenRgbEngine(() => (_config.Host, _config.Port)),
-            new NativeEngine(),
+            new NativeEngine(new INativeDriver[]
+            {
+                new LogitechKeyboardDriver(new HidSharpBackend(), message => _log?.Info(message)),
+            }),
         }, _log);
 
         _log.Info($"Abaddon RGB {VersionText} iniciado" + (startInTray ? " (na bandeja)." : "."));

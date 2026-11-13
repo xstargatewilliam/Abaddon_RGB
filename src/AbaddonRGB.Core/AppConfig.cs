@@ -133,6 +133,15 @@ public sealed class AppConfig
     /// <summary>Nomes dados às peças e zonas (só para exibição).</summary>
     public List<Nickname> Nicknames { get; set; } = new();
 
+    /// <summary>Usa os drivers próprios (sem o OpenRGB) nas peças que já têm driver. Começa desligado.</summary>
+    public bool UseNativeDrivers { get; set; }
+
+    /// <summary>
+    /// ID de cada aparelho USB ("usb:046D:C33C") como o OpenRGB o via: quando o motor nativo
+    /// assume a peça, ela herda as cores próprias e os nomes já configurados.
+    /// </summary>
+    public Dictionary<string, string> HardwareIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>O nome que aparece na tela: o apelido, se houver, ou o nome original.</summary>
     public string DisplayName(string device, string zone, string stableId)
     {
@@ -310,6 +319,9 @@ public sealed class AppConfig
         DisabledDevices ??= new List<string>();
         DisabledDeviceIds ??= new List<string>();
         Nicknames ??= new List<Nickname>();
+        HardwareIds = HardwareIds is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(HardwareIds, StringComparer.OrdinalIgnoreCase);
         Nicknames.RemoveAll(n => n is null || string.IsNullOrWhiteSpace(n.Name) ||
                                  (string.IsNullOrWhiteSpace(n.Device) && string.IsNullOrWhiteSpace(n.DeviceId)));
         Profiles ??= new List<Profile>();

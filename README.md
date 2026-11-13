@@ -103,3 +103,7 @@ Importante: o `.exe` precisa ficar numa pasta em que você tenha permissão de e
 ## Próximos passos
 
 Veja o [ROADMAP](ROADMAP.md). A próxima etapa é a Fase 1: teclado e mouse Logitech sem o OpenRGB.
+
+## Licença
+
+GPL-3.0-or-later. O driver nativo dos teclados Logitech é um porte do OpenRGB (GPL-2.0-or-later); veja `NOTICE.md` para os créditos e as licenças das bibliotecas.

@@ -61,6 +61,7 @@ internal sealed partial class MainForm
     private readonly TextBox _logBox = new();
     private readonly CheckBox _startupCheck = Ui.Check("Iniciar com o Windows (escondido, reaplicando as cores)");
     private readonly CheckBox _autoUpdateCheck = Ui.Check("Atualizar automaticamente");
+    private readonly CheckBox _nativeCheck = Ui.Check("Usar o motor nativo no teclado Logitech (teste)");
     private readonly CheckBox _adminCheck = Ui.Check("Como administrador (para ler a temperatura da CPU)");
     private readonly CheckBox _gammaCheck = Ui.Check("Corrigir a mistura das cores nos LEDs");
     private readonly CheckBox _readOnlyCheck = Ui.Check("Modo somente leitura (não envia nada às peças)");
@@ -823,7 +824,7 @@ internal sealed partial class MainForm
     {
         var page = NewPage();
 
-        var enginesCard = new Card("Motores", 0, 0, 418, 232);
+        var enginesCard = new Card("Motores", 0, 0, 418, 268);
         _engineLabel.AutoSize = true;
         _engineLabel.MaximumSize = new Size(enginesCard.InnerWidth, 0);
         _engineLabel.ForeColor = Ui.Text;
@@ -851,9 +852,31 @@ internal sealed partial class MainForm
         _tips.SetToolTip(probe, "Procura as peças direto no Windows, sem o OpenRGB. Só lê, não envia nada.");
         enginesCard.Body.Controls.Add(Ui.Row(reconnect, redetect));
         enginesCard.Body.Controls.Add(Ui.Row(probe));
+
+        _nativeCheck.Checked = _config.UseNativeDrivers;
+        _nativeCheck.CheckedChanged += async (_, _) =>
+        {
+            if (_syncing) return;
+            var enabled = _nativeCheck.Checked;
+            SetStatus(enabled ? "Ligando o motor nativo..." : "Devolvendo as peças ao OpenRGB...");
+            try
+            {
+                await Task.Run(() => _controller.SetNativeEnabled(enabled));
+                try { _config.Save(); } catch { }
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Não consegui trocar o motor: " + ex.Message);
+            }
+
+            RefreshDeviceViews();
+            await ApplyAsync();
+        };
+        _tips.SetToolTip(_nativeCheck, "Fase 1: o teclado Logitech passa a ser controlado direto pelo Abaddon RGB, sem o OpenRGB. Desmarque para voltar.");
+        enginesCard.Body.Controls.Add(_nativeCheck);
         page.Controls.Add(enginesCard);
 
-        var optionsCard = new Card("Opções", 430, 0, 418, 232);
+        var optionsCard = new Card("Opções", 430, 0, 418, 268);
         _gammaCheck.Checked = _config.GammaCorrection;
         _gammaCheck.CheckedChanged += async (_, _) =>
         {
@@ -928,12 +951,12 @@ internal sealed partial class MainForm
         optionsCard.Body.Controls.Add(updateButton);
         page.Controls.Add(optionsCard);
 
-        var logCard = new Card("Registro", 0, 244, 848, 336);
+        var logCard = new Card("Registro", 0, 280, 848, 300);
         _logBox.Multiline = true;
         _logBox.ReadOnly = true;
         _logBox.ScrollBars = ScrollBars.Vertical;
         _logBox.WordWrap = false;
-        _logBox.Size = new Size(logCard.InnerWidth, 230);
+        _logBox.Size = new Size(logCard.InnerWidth, 194);
         _logBox.BackColor = Ui.Field;
         _logBox.ForeColor = Ui.Text;
         _logBox.BorderStyle = BorderStyle.None;
@@ -1005,7 +1028,11 @@ internal sealed partial class MainForm
         {
             string text;
             if (engine.Id == NativeEngine.EngineId)
-                text = "Nativo: ainda sem drivers próprios. Os primeiros (teclado e mouse Logitech) entram na Fase 1.";
+                text = !_config.UseNativeDrivers
+                    ? "Nativo: desligado (o OpenRGB controla tudo)."
+                    : engine.Connected
+                        ? $"Nativo: ligado, {engine.Devices} peça(s)" + (engine.Devices == 0 ? " (nenhum teclado compatível encontrado)." : ".")
+                        : "Nativo: ligado, mas sem conexão" + (engine.Error is null ? "." : $" ({engine.Error}).");
             else if (engine.Connected)
                 text = $"{engine.Name}: conectado, {engine.Devices} peças.";
             else

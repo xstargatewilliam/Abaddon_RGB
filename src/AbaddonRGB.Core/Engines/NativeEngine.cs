@@ -14,7 +14,7 @@ public interface INativeDriver : IDisposable
     void SetColors(LightDevice device, IReadOnlyList<RgbColor> colors);
 }
 
-/// <summary>Motor dos drivers próprios do Abaddon RGB.</summary>
+/// <summary>Motor dos drivers próprios do Abaddon RGB (falam direto com o hardware, sem o OpenRGB).</summary>
 public sealed class NativeEngine : ILightingEngine
 {
     public const string EngineId = "native";
@@ -65,6 +65,15 @@ public sealed class NativeEngine : ILightingEngine
         if (!_owners.TryGetValue(device.Index, out var driver))
             throw new InvalidOperationException("Peça desconhecida pelo motor nativo.");
         driver.SetColors(device, colors);
+    }
+
+    /// <summary>Fecha todos os aparelhos abertos. Um novo TryConnect abre de novo.</summary>
+    public void Disconnect()
+    {
+        foreach (var driver in _drivers)
+            try { driver.Dispose(); } catch { }
+        _owners.Clear();
+        _connected = false;
     }
 
     public void Dispose()

@@ -7,7 +7,7 @@ Enquanto isso, ela continua pelo motor OpenRGB.
 | Fase | O que entrega | Situação |
 |---|---|---|
 | 0 | Camada de motores, modo somente leitura, registro, interface em abas, perfis, automações | **Feita (v0.3)** |
-| 1 | Driver nativo do teclado G512 e do mouse G305 (USB, protocolo HID++) | A fazer |
+| 1 | Driver nativo do teclado G512 (HID++ 2.0, recurso 0x8080) | **Feita (v0.5, em teste)**. Mouse G305: a verificar se tem luz controlável |
 | 2 | Driver nativo da placa ASRock B450M + cooler (SMBus via PawnIO, protocolo Polychrome) | A fazer |
 | 4 | Serviço do Windows com permissão de administrador + instalador | A fazer |
 | 3 | Driver nativo das memórias (chip ENE, SMBus) — a fase mais delicada, por isso depois da 4 | A fazer |
@@ -23,7 +23,7 @@ Enquanto isso, ela continua pelo motor OpenRGB.
 
 ## Regras para os drivers nativos
 
-1. **Código próprio.** Os protocolos são estudados (documentação pública, captura de tráfego USB, comportamento observado) e reescritos do zero. Nada de copiar trechos do OpenRGB: ele é GPL e este projeto é MIT.
+1. **Porte do OpenRGB, com crédito.** Os protocolos vêm do OpenRGB (GPL-2.0-or-later), portados para C# e testados no hardware real. Por isso o projeto é GPL-3.0-or-later. Todo arquivo portado diz de onde veio no cabeçalho, e o `NOTICE.md` lista as origens.
 2. **Ler antes de escrever.** Todo driver primeiro identifica a peça e só escreve depois de confirmar que é ela.
 3. **SMBus com lista fixa de endereços.** Nunca varrer o barramento escrevendo: os chips de configuração das memórias (SPD) ficam nele.
 4. **Sempre com volta.** Qualquer peça pode ser devolvida ao motor OpenRGB ou desligada do programa pela interface.
