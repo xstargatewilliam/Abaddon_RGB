@@ -204,7 +204,8 @@ public sealed class LightingController : IDisposable
                     continue;
                 }
 
-                var colors = ColorComposer.Build(device, baseColor, Config.Brightness, overrides, corrections, top);
+                var colors = ColorComposer.Build(device, baseColor, Config.Brightness, overrides, corrections, top,
+                    gamma: Config.GammaCorrection);
                 if (colors.Length == 0)
                 {
                     results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true));

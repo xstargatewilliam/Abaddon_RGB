@@ -61,6 +61,7 @@ internal sealed partial class MainForm
     private readonly TextBox _logBox = new();
     private readonly CheckBox _startupCheck = Ui.Check("Iniciar com o Windows (escondido, reaplicando as cores)");
     private readonly CheckBox _autoUpdateCheck = Ui.Check("Atualizar automaticamente");
+    private readonly CheckBox _gammaCheck = Ui.Check("Corrigir a mistura das cores nos LEDs");
     private readonly CheckBox _readOnlyCheck = Ui.Check("Modo somente leitura (não envia nada às peças)");
 
     private void BuildUi()
@@ -337,7 +338,10 @@ internal sealed partial class MainForm
         var swapButton = Ui.Button("Inverter vermelho/verde");
         swapButton.Click += async (_, _) => await ToggleRedGreenSwapAsync();
         _tips.SetToolTip(swapButton, "Use quando a peça mostra verde no lugar de vermelho (e rosa no lugar de verde). Clique de novo para desfazer.");
-        body.Controls.Add(Ui.Row(ownColor, followMain, swapButton, _toggleControlButton));
+        var identify = Ui.Button("Identificar");
+        identify.Click += async (_, _) => await IdentifyAsync();
+        _tips.SetToolTip(identify, "Faz a peça ou zona selecionada piscar, para você ver qual luz do PC ela controla.");
+        body.Controls.Add(Ui.Row(identify, ownColor, followMain, swapButton, _toggleControlButton));
 
         page.Controls.Add(partsCard);
         return page;
@@ -532,6 +536,48 @@ internal sealed partial class MainForm
         else
             _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
         await ApplyAsync();
+    }
+
+    private bool _identifying;
+
+    /// <summary>Pisca a peça ou zona selecionada (branco e apagado) e depois restaura as cores.</summary>
+    private async Task IdentifyAsync()
+    {
+        var tag = SelectedTarget();
+        if (tag is null || _identifying) return;
+        if (_config.ReadOnly)
+        {
+            SetStatus("O modo somente leitura está ligado: desligue na aba Sistema para identificar as peças.");
+            return;
+        }
+
+        _identifying = true;
+        var where = tag.Zone.Length > 0 ? $"{tag.Device} › {tag.Zone}" : tag.Device;
+        SetStatus($"Piscando: {where}. Veja qual luz do PC está piscando.");
+
+        // Cor temporária: não é salva no config.json.
+        var flash = new TargetColor { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Color = "#FFFFFF" };
+        try
+        {
+            _config.Overrides.Add(flash);
+            for (var i = 0; i < 4 && !_exiting; i++)
+            {
+                flash.Color = "#FFFFFF";
+                await ApplyAsync(quiet: true);
+                await Task.Delay(600);
+                flash.Color = "#000000";
+                await ApplyAsync(quiet: true);
+                await Task.Delay(450);
+            }
+        }
+        finally
+        {
+            _config.Overrides.Remove(flash);
+            _identifying = false;
+        }
+
+        await ApplyAsync();
+        SetStatus($"Pronto. A zona que piscou foi: {where}.");
     }
 
     private bool IsSwapped(string device, string zone, string stableId) =>
@@ -761,6 +807,15 @@ internal sealed partial class MainForm
         page.Controls.Add(enginesCard);
 
         var optionsCard = new Card("Opções", 430, 0, 418, 232);
+        _gammaCheck.Checked = _config.GammaCorrection;
+        _gammaCheck.CheckedChanged += async (_, _) =>
+        {
+            _config.GammaCorrection = _gammaCheck.Checked;
+            _log.Info("Correção de mistura de cores " + (_config.GammaCorrection ? "ligada." : "desligada."));
+            await ApplyAsync();
+        };
+        _tips.SetToolTip(_gammaCheck, "Deixa as cores misturadas (azul com um pouco de verde, laranja, lilás) mais parecidas com a tela.");
+
         _readOnlyCheck.Checked = _config.ReadOnly;
         _readOnlyCheck.CheckedChanged += (_, _) =>
         {
@@ -790,6 +845,7 @@ internal sealed partial class MainForm
 
         optionsCard.Body.Controls.Add(_startupCheck);
         optionsCard.Body.Controls.Add(_autoUpdateCheck);
+        optionsCard.Body.Controls.Add(_gammaCheck);
         optionsCard.Body.Controls.Add(_readOnlyCheck);
         optionsCard.Body.Controls.Add(updateButton);
         page.Controls.Add(optionsCard);

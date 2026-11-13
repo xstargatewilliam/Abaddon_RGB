@@ -7,10 +7,11 @@ public static class ColorComposer
 {
     /// <param name="top">Cor que vence todas as outras (usada pela automação de temperatura).</param>
     public static RgbColor[] Build(LightDevice device, RgbColor baseColor, int brightness,
-        IReadOnlyList<TargetColor> overrides, IReadOnlyList<ZoneCorrection> corrections, TargetColor? top = null)
+        IReadOnlyList<TargetColor> overrides, IReadOnlyList<ZoneCorrection> corrections, TargetColor? top = null,
+        bool gamma = false)
     {
         var colors = new RgbColor[Math.Max(device.LedCount, 0)];
-        Array.Fill(colors, baseColor.Scale(brightness));
+        Array.Fill(colors, (gamma ? Gamma(baseColor) : baseColor).Scale(brightness));
 
         var offset = 0;
         foreach (var zone in device.Zones)
@@ -28,6 +29,7 @@ public static class ColorComposer
             if (top is not null && top.Matches(device.Name, zone.Name, device.StableId) && RgbColor.TryParse(top.Color, out var t))
                 color = t;
 
+            if (gamma) color = Gamma(color);
             color = color.Scale(brightness);
 
             var correction = corrections.FirstOrDefault(c => c.Matches(device.Name, zone.Name, device.StableId));
@@ -45,4 +47,17 @@ public static class ColorComposer
 
         return colors;
     }
+
+    private const double GammaExponent = 2.2;
+    private static readonly byte[] GammaTable = Enumerable.Range(0, 256)
+        .Select(v => (byte)Math.Round(255 * Math.Pow(v / 255.0, GammaExponent)))
+        .ToArray();
+
+    /// <summary>
+    /// Os LEDs acendem de forma linear, mas o olho não enxerga assim: 25% de verde
+    /// parece quase metade, e um azul com um pouco de verde vira ciano.
+    /// A correção de gama ajusta a mistura. Cores puras, branco e preto não mudam.
+    /// </summary>
+    public static RgbColor Gamma(RgbColor color) =>
+        new(GammaTable[color.R], GammaTable[color.G], GammaTable[color.B]);
 }

@@ -124,6 +124,9 @@ public sealed class AppConfig
     /// <summary>Modo de segurança: detecta as peças, mas não envia nada para elas.</summary>
     public bool ReadOnly { get; set; }
 
+    /// <summary>Corrige a mistura das cores para o jeito que o olho enxerga os LEDs (gama 2,2).</summary>
+    public bool GammaCorrection { get; set; } = true;
+
     public List<Profile> Profiles { get; set; } = new()
     {
         new Profile { Name = "Dia", Color = "#3A6EA5", Brightness = 100 },
