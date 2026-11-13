@@ -94,10 +94,9 @@ O GitHub Actions compila a cada push.
 
 ## Publicar uma versão nova (é o que dispara a atualização automática)
 
-1. Aumente o `<Version>` em `src/AbaddonRGB/AbaddonRGB.csproj` (ex.: `0.2.0` → `0.2.1`) e faça o push.
-2. No GitHub, abra a aba **Actions**, clique em **Build** na lista da esquerda.
-3. Clique em **Run workflow** (à direita), deixe a branch `main` e confirme em **Run workflow**.
-4. Em alguns minutos aparece a release `v0.2.1` com o `AbaddonRGB.exe`, e os programas instalados se atualizam sozinhos.
+É automático: a cada push na `main`, o GitHub Actions compila, roda os testes e, se o `<Version>` de `src/AbaddonRGB/AbaddonRGB.csproj` ainda não tiver release, cria a release com o `AbaddonRGB.exe` e o `.sha256`. Os programas instalados se atualizam sozinhos em até 6 horas (ou na hora, em "Procurar atualização").
+
+Para publicar, basta aumentar o `<Version>` (ex.: `0.4.6` → `0.4.7`). Commits que não mudam a versão não geram release. O botão **Run workflow** (aba **Actions** → **Build**) continua existindo para publicar de novo a versão atual.
 
 Importante: o `.exe` precisa ficar numa pasta em que você tenha permissão de escrita (ex.: Documentos), não em `C:\Program Files`.
 

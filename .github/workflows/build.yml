@@ -5,7 +5,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
-  # Botão "Run workflow" na aba Actions: compila e publica a versão do .csproj como release.
+  # Botão "Run workflow" na aba Actions: compila e publica de novo a versão do .csproj.
+  # (Não é mais obrigatório: versões novas na main são publicadas sozinhas.)
   workflow_dispatch:
 
 permissions:
@@ -55,8 +56,25 @@ jobs:
           if (-not $version) { throw "Não achei <Version> no AbaddonRGB.csproj" }
           "tag=v$version" >> $env:GITHUB_OUTPUT
 
-      - name: Criar release (botão Run workflow ou tag v*)
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+      # Publicação automática: num push na main, se ainda não existe release com a
+      # versão do .csproj, ela é criada. Commits que não mudam a versão (só texto,
+      # roteiro etc.) não geram release nenhuma.
+      - name: Ver se esta versão já foi publicada
+        id: published
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
+          $global:LASTEXITCODE = 0
+
+      - name: Criar release (versão nova na main, botão Run workflow ou tag v*)
+        if: >
+          github.event_name == 'workflow_dispatch' ||
+          startsWith(github.ref, 'refs/tags/v') ||
+          steps.published.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
