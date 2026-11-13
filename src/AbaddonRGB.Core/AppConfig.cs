@@ -50,6 +50,21 @@ public sealed class TargetColor
     public TargetColor Clone() => new() { Device = Device, DeviceId = DeviceId, Zone = Zone, Color = Color };
 }
 
+/// <summary>Nome escolhido pela pessoa para uma peça (Zone vazia) ou uma zona. Ex.: "Cooler e fans".</summary>
+public sealed class Nickname
+{
+    public string Device { get; set; } = "";
+    public string DeviceId { get; set; } = "";
+    public string Zone { get; set; } = "";
+    public string Name { get; set; } = "";
+
+    public bool Matches(string device, string zone, string stableId) =>
+        (string.IsNullOrWhiteSpace(DeviceId) || string.IsNullOrWhiteSpace(stableId)
+            ? string.Equals(Device, device, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(DeviceId, stableId, StringComparison.OrdinalIgnoreCase)) &&
+        string.Equals(Zone ?? "", zone ?? "", StringComparison.OrdinalIgnoreCase);
+}
+
 /// <summary>Um conjunto de cores salvo com nome (ex.: "Dia", "Noite").</summary>
 public sealed class Profile
 {
@@ -114,6 +129,18 @@ public sealed class AppConfig
 
     /// <summary>IDs persistentes das peças que não devem receber comandos.</summary>
     public List<string> DisabledDeviceIds { get; set; } = new();
+
+    /// <summary>Nomes dados às peças e zonas (só para exibição).</summary>
+    public List<Nickname> Nicknames { get; set; } = new();
+
+    /// <summary>O nome que aparece na tela: o apelido, se houver, ou o nome original.</summary>
+    public string DisplayName(string device, string zone, string stableId)
+    {
+        var nickname = Nicknames.FirstOrDefault(n => n.Matches(device, zone, stableId));
+        return nickname is not null && !string.IsNullOrWhiteSpace(nickname.Name)
+            ? nickname.Name
+            : zone.Length > 0 ? zone : device;
+    }
 
     /// <summary>Reaplica as cores assim que o programa conecta.</summary>
     public bool ApplyOnStart { get; set; } = true;
@@ -282,6 +309,9 @@ public sealed class AppConfig
         Overrides ??= new List<TargetColor>();
         DisabledDevices ??= new List<string>();
         DisabledDeviceIds ??= new List<string>();
+        Nicknames ??= new List<Nickname>();
+        Nicknames.RemoveAll(n => n is null || string.IsNullOrWhiteSpace(n.Name) ||
+                                 (string.IsNullOrWhiteSpace(n.Device) && string.IsNullOrWhiteSpace(n.DeviceId)));
         Profiles ??= new List<Profile>();
         Schedule ??= new ScheduleSettings();
         Schedule.Rules ??= new List<ScheduleRule>();

@@ -57,7 +57,7 @@ public sealed class OpenRgbEngine : ILightingEngine
                     occurrences.TryGetValue(id, out var occurrence);
                     occurrences[id] = occurrence + 1;
                     if (occurrence > 0) id += "-" + (occurrence + 1);
-                    return new LightDevice(EngineId, d.Index, d.Name, zones, d.Leds.Length, id);
+                    return new LightDevice(EngineId, d.Index, d.Name, zones, d.Leds.Length, id, Field(d, "Location") ?? "");
                 })
                 .ToArray();
         }

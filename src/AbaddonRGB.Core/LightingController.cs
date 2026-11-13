@@ -125,7 +125,8 @@ public sealed class LightingController : IDisposable
             $"{d.EngineId}|{d.Index}|{d.StableId}|{d.Name}|{d.LedCount}|{d.Zones.Count}";
         if (!unique.Select(Signature).SequenceEqual(_devices.Select(Signature)))
             Log.Info("Peças detectadas: " + (unique.Count == 0 ? "nenhuma" :
-                string.Join("; ", unique.Select(d => $"{d.Name} [{d.LedCount} LEDs, {d.StableId}]"))));
+                string.Join("; ", unique.Select(d => $"{d.Name} [{d.LedCount} LEDs" +
+                    (string.IsNullOrWhiteSpace(d.Location) ? "" : $", {d.Location}") + $", {d.StableId}]"))));
 
         _devices = unique;
     }

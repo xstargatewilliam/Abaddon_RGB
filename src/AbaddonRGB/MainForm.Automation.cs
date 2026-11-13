@@ -1,5 +1,6 @@
 using AbaddonRGB.Core;
 using AbaddonRGB.Core.Automation;
+using AbaddonRGB.Core.Engines;
 
 namespace AbaddonRGB;
 
@@ -310,10 +311,12 @@ internal sealed partial class MainForm
         {
             if (seen.Contains(device.StableId)) continue;
             seen.Add(device.StableId);
-            items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Text = device.Name + " (inteira)" });
+            var deviceLabel = DeviceLabel(device, _controller.Devices.Count(d => string.Equals(d.Name, device.Name, StringComparison.OrdinalIgnoreCase)) > 1);
+            items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Text = deviceLabel + " (inteira)" });
             if (device.Zones.Count > 1)
                 foreach (var zone in device.Zones)
-                    items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name, Text = device.Name + "  ›  " + zone.Name });
+                    items.Add(new TargetItem { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name,
+                        Text = deviceLabel + "  ›  " + _config.DisplayName(device.Name, zone.Name, device.StableId) });
         }
 
         // Mantém o alvo salvo mesmo que a peça não esteja conectada agora.

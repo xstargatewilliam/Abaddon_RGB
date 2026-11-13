@@ -331,18 +331,23 @@ internal sealed partial class MainForm
 
         var ownColor = Ui.Button("Cor própria...");
         ownColor.Click += async (_, _) => await SetOwnColorAsync();
-        var followMain = Ui.Button("Seguir a cor geral");
+        var followMain = Ui.Button("Usar cor geral");
         followMain.Click += async (_, _) => await ClearOwnColorAsync();
-        _toggleControlButton = Ui.Button("Não controlar esta peça");
+        _toggleControlButton = Ui.Button("Não controlar");
         _toggleControlButton.Click += async (_, _) => await ToggleControlAsync();
         _tips.SetToolTip(_toggleControlButton, "Se uma peça der problema, o Abaddon RGB para de enviar comandos para ela.");
-        var swapButton = Ui.Button("Inverter vermelho/verde");
+        var swapButton = Ui.Button("Inverter verm./verde");
         swapButton.Click += async (_, _) => await ToggleRedGreenSwapAsync();
         _tips.SetToolTip(swapButton, "Use quando a peça mostra verde no lugar de vermelho (e rosa no lugar de verde). Clique de novo para desfazer.");
         var identify = Ui.Button("Identificar");
         identify.Click += async (_, _) => await IdentifyAsync();
         _tips.SetToolTip(identify, "Faz a peça ou zona selecionada piscar, para você ver qual luz do PC ela controla.");
-        body.Controls.Add(Ui.Row(identify, ownColor, followMain, swapButton, _toggleControlButton));
+        var rename = Ui.Button("Renomear");
+        rename.Click += async (_, _) => await RenameSelectedAsync();
+        _tips.SetToolTip(rename, "Dá um nome seu para a peça ou zona (ex.: \"Cooler e fans\"). O nome original fica entre parênteses.");
+        foreach (var b in new[] { identify, ownColor, followMain, swapButton, _toggleControlButton, rename })
+            b.Margin = new Padding(0, 0, 6, 0);
+        body.Controls.Add(Ui.Row(identify, rename, ownColor, followMain, swapButton, _toggleControlButton));
 
         page.Controls.Add(partsCard);
         return page;
@@ -427,12 +432,18 @@ internal sealed partial class MainForm
         _tree.Nodes.Clear();
         TreeNode? toSelect = null;
 
+        // Peças com o mesmo nome (as duas memórias) ganham o endereço no rótulo para diferenciar.
+        var repeated = devices.GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         foreach (var device in devices)
         {
-            var node = new TreeNode(DescribeTarget(device.Name, "", device.Name, device.StableId))
+            var label = DeviceLabel(device, repeated.Contains(device.Name));
+            var node = new TreeNode(DescribeTarget(device.Name, "", label, device.StableId))
             {
                 Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId },
-                ToolTipText = $"{device.LedCount} LEDs, motor {EngineName(device.EngineId)}",
+                ToolTipText = $"{device.Name}\n{device.LedCount} LEDs, motor {EngineName(device.EngineId)}" +
+                              (string.IsNullOrWhiteSpace(device.Location) ? "" : $"\nLocal: {device.Location}"),
                 ImageKey = IconFor(device.Name),
                 SelectedImageKey = IconFor(device.Name),
             };
@@ -442,20 +453,22 @@ internal sealed partial class MainForm
             {
                 foreach (var zone in device.Zones)
                 {
-                    var child = new TreeNode(DescribeTarget(device.Name, zone.Name, zone.Name, device.StableId))
+                    var zoneLabel = _config.DisplayName(device.Name, zone.Name, device.StableId);
+                    if (!string.Equals(zoneLabel, zone.Name, StringComparison.Ordinal)) zoneLabel += $"  ({zone.Name})";
+                    var child = new TreeNode(DescribeTarget(device.Name, zone.Name, zoneLabel, device.StableId))
                     {
                         Tag = new NodeTag { Device = device.Name, DeviceId = device.StableId, Zone = zone.Name },
-                        ToolTipText = $"{zone.LedCount} LEDs",
+                        ToolTipText = $"{zone.Name}\n{zone.LedCount} LEDs",
                         ImageKey = "bolt",
                         SelectedImageKey = "bolt",
                     };
                     node.Nodes.Add(child);
-                    if (IsSame(selected, device.Name, zone.Name)) toSelect = child;
+                    if (IsSame(selected, device, zone.Name)) toSelect = child;
                 }
             }
 
             _tree.Nodes.Add(node);
-            if (IsSame(selected, device.Name, "")) toSelect = node;
+            if (IsSame(selected, device, "")) toSelect = node;
         }
 
         if (devices.Count == 0)
@@ -468,10 +481,43 @@ internal sealed partial class MainForm
         UpdateToggleControlText();
     }
 
-    private static bool IsSame(NodeTag? tag, string device, string zone) =>
+    private static bool IsSame(NodeTag? tag, LightDevice device, string zone) =>
         tag is not null &&
-        string.Equals(tag.Device, device, StringComparison.OrdinalIgnoreCase) &&
+        (tag.DeviceId.Length > 0 && device.StableId.Length > 0
+            ? string.Equals(tag.DeviceId, device.StableId, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(tag.Device, device.Name, StringComparison.OrdinalIgnoreCase)) &&
         string.Equals(tag.Zone, zone, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Rótulo da peça na lista: apelido (ou nome) e, se o nome se repete, o endereço.</summary>
+    private string DeviceLabel(LightDevice device, bool nameRepeats)
+    {
+        var label = _config.DisplayName(device.Name, "", device.StableId);
+        var renamed = !string.Equals(label, device.Name, StringComparison.Ordinal);
+        if (renamed) label += $"  ({device.Name})";
+        if (nameRepeats && device.ShortLocation.Length > 0) label += $"  [{device.ShortLocation}]";
+        return label;
+    }
+
+    private async Task RenameSelectedAsync()
+    {
+        var tag = SelectedTarget();
+        if (tag is null) return;
+
+        var original = tag.Zone.Length > 0 ? tag.Zone : tag.Device;
+        var current = _config.Nicknames.FirstOrDefault(n => n.Matches(tag.Device, tag.Zone, tag.DeviceId))?.Name ?? "";
+        var name = RenameDialog.Ask(this, original, current);
+        if (name is null) return;
+
+        _config.Nicknames.RemoveAll(n => n.Matches(tag.Device, tag.Zone, tag.DeviceId));
+        if (name.Length > 0)
+            _config.Nicknames.Add(new Nickname { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Name = name });
+
+        try { _config.Save(); } catch { }
+        _log.Info(name.Length > 0 ? $"\"{original}\" agora se chama \"{name}\"." : $"\"{original}\" voltou ao nome original.");
+        RefreshDeviceViews();
+        SetStatus(name.Length > 0 ? $"Renomeado para \"{name}\"." : "Nome original restaurado.");
+        await Task.CompletedTask;
+    }
 
     private string DescribeTarget(string device, string zone, string label, string stableId)
     {
@@ -498,7 +544,7 @@ internal sealed partial class MainForm
         var tag = _tree.SelectedNode?.Tag as NodeTag;
         _toggleControlButton.Text = tag is not null && _config.IsDisabled(tag.Device, tag.DeviceId)
             ? "Voltar a controlar"
-            : "Não controlar esta peça";
+            : "Não controlar";
     }
 
     private async Task SetOwnColorAsync()
