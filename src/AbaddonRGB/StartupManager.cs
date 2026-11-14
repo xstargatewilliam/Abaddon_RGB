@@ -8,6 +8,9 @@ namespace AbaddonRGB;
 /// - normal: pela chave "Run" do registro do usuário (sem administrador);
 /// - como administrador: por uma tarefa agendada com privilégio mais alto, que abre
 ///   o programa no login sem o aviso do Windows (necessário para ler a CPU).
+///   Nesse modo a tarefa aponta para uma cópia em "C:\Program Files\AbaddonRGB", pasta
+///   que só administradores podem alterar. Assim nenhum programa comum consegue trocar
+///   o .exe que o Windows abre com privilégio de administrador.
 /// </summary>
 internal static class StartupManager
 {
@@ -19,6 +22,16 @@ internal static class StartupManager
 
     private static string ExePath => Environment.ProcessPath ?? Application.ExecutablePath;
     private static string Command => $"\"{ExePath}\" {TrayArgument}";
+
+    /// <summary>Pasta protegida (só administradores escrevem) para a cópia usada no modo administrador.</summary>
+    public static string ProtectedFolder =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "AbaddonRGB");
+
+    public static string ProtectedExe => Path.Combine(ProtectedFolder, "AbaddonRGB.exe");
+
+    /// <summary>True se este .exe já é a cópia da pasta protegida.</summary>
+    public static bool RunningFromProtectedFolder =>
+        string.Equals(Path.GetFullPath(ExePath), Path.GetFullPath(ProtectedExe), StringComparison.OrdinalIgnoreCase);
 
     public static bool IsEnabled => RunKeyExists || TaskExists;
 
@@ -79,13 +92,47 @@ internal static class StartupManager
             key.DeleteValue(ValueName);
     }
 
+    /// <summary>
+    /// Copia este .exe para a pasta protegida, a menos que lá já esteja uma versão igual ou mais nova.
+    /// </summary>
+    private static void InstallProtectedCopy()
+    {
+        if (RunningFromProtectedFolder) return;
+
+        if (File.Exists(ProtectedExe))
+        {
+            var installed = ReadVersion(ProtectedExe);
+            var current = ReadVersion(ExePath);
+            if (installed is not null && current is not null && installed >= current) return;
+        }
+
+        Directory.CreateDirectory(ProtectedFolder);
+        var temp = ProtectedExe + ".new";
+        File.Copy(ExePath, temp, overwrite: true);
+        File.Move(temp, ProtectedExe, overwrite: true);
+    }
+
+    private static Version? ReadVersion(string path)
+    {
+        try
+        {
+            var info = FileVersionInfo.GetVersionInfo(path);
+            return Version.TryParse(info.FileVersion, out var version) ? version : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static void CreateTask()
     {
+        InstallProtectedCopy();
         var user = $"{Environment.UserDomainName}\\{Environment.UserName}";
         // /IT: só roda com o usuário logado (não pede senha). /DELAY: dá tempo ao OpenRGB subir.
         var code = RunSchtasks(
             $"/Create /F /TN \"{TaskName}\" /SC ONLOGON /RU \"{user}\" /IT /RL HIGHEST /DELAY 0000:15 " +
-            $"/TR \"\\\"{ExePath}\\\" {TrayArgument}\"");
+            $"/TR \"\\\"{ProtectedExe}\\\" {TrayArgument}\"");
         if (code != 0)
             throw new InvalidOperationException($"O Windows não aceitou criar a tarefa de inicialização (código {code}).");
     }

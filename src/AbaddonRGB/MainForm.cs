@@ -86,6 +86,15 @@ internal sealed partial class MainForm : Form
         _healthTimer.Tick += async (_, _) => await CheckConnectionHealthAsync();
         _healthTimer.Start();
 
+        if (_config.LoadWarning is { } loadWarning)
+        {
+            _log.Warn(loadWarning);
+            SetStatus(loadWarning);
+        }
+
+        // A versão nova só é dada como boa depois de ficar aberta um tempo: até lá a anterior fica guardada.
+        _ = ConfirmUpdateLaterAsync();
+
         if (justUpdated)
         {
             _tray.ShowBalloonTip(4000, "Abaddon RGB atualizado",
@@ -100,6 +109,13 @@ internal sealed partial class MainForm : Form
     }
 
     private string VersionText => "v" + _version.ToString(3);
+
+    /// <summary>Salva a configuração; se não der, avisa na barra de status em vez de ficar quieto.</summary>
+    private void SaveConfig()
+    {
+        if (!_controller.SaveConfig())
+            SetStatus("Não consegui salvar as configurações: " + _config.LastSaveError);
+    }
 
     private void SetStatus(string text)
     {
@@ -224,7 +240,7 @@ internal sealed partial class MainForm : Form
         {
             if (!quiet)
             {
-                try { _config.Save(); } catch { }
+                SaveConfig();
             }
 
             if (!_controller.IsConnected)
@@ -341,6 +357,23 @@ internal sealed partial class MainForm : Form
 
     // ---------------------------------------------------------------- atualização
 
+    private async Task ConfirmUpdateLaterAsync()
+    {
+        await Task.Delay(UpdateGuard.ConfirmAfter);
+        var exe = Environment.ProcessPath;
+        if (_exiting || exe is null) return;
+        try
+        {
+            var pending = File.Exists(UpdateGuard.MarkerPath(AppConfig.Folder));
+            UpdateGuard.Confirm(AppConfig.Folder, exe);
+            if (pending) _log.Info($"Atualização para {VersionText} confirmada: a versão anterior foi apagada.");
+        }
+        catch (Exception ex)
+        {
+            _log.Warn("Não consegui apagar a versão anterior: " + ex.Message);
+        }
+    }
+
     private async Task CheckForUpdatesLaterAsync()
     {
         await Task.Delay(TimeSpan.FromSeconds(20));
@@ -352,6 +385,9 @@ internal sealed partial class MainForm : Form
         if (_updating || _exiting) return;
         if (!manual && !_config.AutoUpdate) return;
 
+        // Uma única trava para procurar, baixar e instalar: duas checagens ao mesmo tempo
+        // (timer + botão) nunca baixam nem trocam o arquivo duas vezes.
+        _updating = true;
         try
         {
             if (manual) SetStatus("Procurando atualização...");
@@ -384,6 +420,10 @@ internal sealed partial class MainForm : Form
             // Sem internet ou GitHub fora do ar: na checagem automática, fica quieto.
             if (manual) SetStatus("Não consegui procurar atualização: " + ex.Message);
         }
+        finally
+        {
+            _updating = false;
+        }
     }
 
     private async Task InstallUpdateAsync(UpdateInfo update)
@@ -395,7 +435,6 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        _updating = true;
         try
         {
             var newVersion = "v" + update.Version.ToString(3);
@@ -405,7 +444,17 @@ internal sealed partial class MainForm : Form
             var downloaded = await Updater.DownloadAsync(update);
 
             var arguments = Program.UpdatedArgument + (Visible ? "" : " " + StartupManager.TrayArgument);
-            Updater.InstallAndRestart(downloaded, exe, arguments);
+            UpdateGuard.BeginUpdate(AppConfig.Folder, exe, VersionText, newVersion);
+            try
+            {
+                Updater.InstallAndRestart(downloaded, exe, arguments);
+            }
+            catch
+            {
+                try { File.Delete(UpdateGuard.MarkerPath(AppConfig.Folder)); } catch { }
+                throw;
+            }
+
             ExitApp();
         }
         catch (UnauthorizedAccessException)
@@ -417,10 +466,6 @@ internal sealed partial class MainForm : Form
         {
             SetStatus("A atualização falhou: " + ex.Message);
             _log.Error("Atualização falhou: " + ex.Message);
-        }
-        finally
-        {
-            _updating = false;
         }
     }
 

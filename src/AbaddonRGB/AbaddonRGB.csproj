@@ -9,7 +9,7 @@
     <RootNamespace>AbaddonRGB</RootNamespace>
     <AssemblyName>AbaddonRGB</AssemblyName>
     <Product>Abaddon RGB</Product>
-    <Version>0.5.3</Version>
+    <Version>0.5.4</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>

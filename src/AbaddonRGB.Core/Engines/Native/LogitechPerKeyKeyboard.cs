@@ -44,6 +44,15 @@ public sealed class LogitechPerKeyKeyboard
     /// confirmação, paramos de esperar por elas (senão cada quadro perde ~0,5 s).
     /// </summary>
     private bool _acksSeen = true;
+
+    /// <summary>
+    /// False quando o teclado não confirma os pacotes de cor: daí só a aplicação final (fn5)
+    /// é confirmada, não cada pacote. Fica registrado para o diagnóstico.
+    /// </summary>
+    public bool ConfirmsEachPacket => _acksSeen;
+
+    /// <summary>Contagem do último quadro: enviados, confirmados, recusados e sem resposta.</summary>
+    public (int Sent, int Confirmed, int Rejected, int Expired) LastFrame { get; private set; }
     private int _confirmed;
 
     public LogitechPerKeyKeyboard(HidPpChannel channel) => _channel = channel;
@@ -186,6 +195,7 @@ public sealed class LogitechPerKeyKeyboard
         }
 
         if (sent > 0 && _confirmed == 0) _acksSeen = false;
+        LastFrame = (sent, _confirmed, rejected, Math.Max(sent - _confirmed, 0));
 
         // fn5 FlushLeds: o teclado só mostra as cores depois disto. "Ocupado" (0x08) = tentar de novo.
         var flushDeadline = Environment.TickCount64 + FlushTimeoutMs * 4;

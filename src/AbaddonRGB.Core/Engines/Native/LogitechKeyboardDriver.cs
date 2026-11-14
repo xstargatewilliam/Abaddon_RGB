@@ -54,6 +54,7 @@ public sealed class LogitechKeyboardDriver : INativeDriver
         public required LogitechPerKeyKeyboard Keyboard;
         public required LightDevice Device;
         public required List<(ushort KeyType, byte KeyId)> Leds;
+        public bool NoAckLogged;
     }
 
     private readonly IHidBackend _backend;
@@ -203,6 +204,15 @@ public sealed class LogitechKeyboardDriver : INativeDriver
                 Close(keyboard);
                 _open.Remove(keyboard.InterfaceKey);
                 throw new IOException("o teclado foi desconectado (" + ex.Message + ")", ex);
+            }
+
+            if (!keyboard.Keyboard.ConfirmsEachPacket && !keyboard.NoAckLogged)
+            {
+                keyboard.NoAckLogged = true;
+                var (sent, confirmed, rejected, expired) = keyboard.Keyboard.LastFrame;
+                _log?.Invoke($"{keyboard.Device.Name}: o teclado não confirma cada pacote de cor " +
+                             $"({sent} enviados, {confirmed} confirmados, {rejected} recusados, {expired} sem resposta). " +
+                             "Seguindo só com a confirmação da aplicação final.");
             }
 
             if (error is not null) throw new IOException(error);

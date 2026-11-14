@@ -93,18 +93,24 @@ var takeoverConfig = new AppConfig { UseNativeDrivers = false };
 var openRgbKb = new LightDevice("openrgb", 3, "G512 RGB MECHANICAL GAMING KEYBOARD", new[] { new LightZone("Keyboard", 105) }, 105,
     "openrgb-id-g512", @"HID: \\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1&0&0002#{x}");
 var ram = new LightDevice("openrgb", 1, "ENE DRAM", new[] { new LightZone("DRAM", 5) }, 5, "ram-id", "I2C: PIIX4 #0, Address 0x71");
-var fakeOpenRgb = new StaticEngine("openrgb", openRgbKb, ram);
+// Um segundo G512 idêntico (mesmo VID/PID), em outra porta USB.
+var openRgbKb2 = new LightDevice("openrgb", 4, "G512 RGB MECHANICAL GAMING KEYBOARD", new[] { new LightZone("Keyboard", 105) }, 105,
+    "openrgb-id-g512-b", @"HID: \\?\hid#vid_046d&pid_c33c&mi_01&col03#8&2&0&0002#{x}");
+var fakeOpenRgb = new StaticEngine("openrgb", openRgbKb, ram, openRgbKb2);
 var nativeEngine = new NativeEngine(new INativeDriver[] { new LogitechKeyboardDriver(new FakeBackend(new FakeG512())) });
 takeoverConfig.Overrides.Add(new TargetColor { Device = openRgbKb.Name, DeviceId = "openrgb-id-g512", Color = "#00FF00" });
 using (var controller = new LightingController(takeoverConfig, new ILightingEngine[] { fakeOpenRgb, nativeEngine }, new AppLog(null)))
 {
     Check(controller.Connect(out _), "Controller connects");
-    Check(!nativeEngine.IsConnected && controller.Devices.Count == 2, "Native engine stays off until enabled");
-    Check(takeoverConfig.HardwareIds["usb:046D:C33C"] == "openrgb-id-g512", "OpenRGB ID remembered per USB device");
+    Check(!nativeEngine.IsConnected && controller.Devices.Count == 3, "Native engine stays off until enabled");
+    Check(takeoverConfig.HardwareIds["usb:046D:C33C:01:8&1&0"] == "openrgb-id-g512", "OpenRGB ID remembered per physical USB device");
 
     controller.SetNativeEnabled(true);
     var keyboards = controller.Devices.Where(d => d.HardwareKey == "usb:046D:C33C").ToList();
-    Check(keyboards.Count == 1 && keyboards[0].EngineId == "native", "Only the native copy of the keyboard remains");
+    Check(keyboards.Count == 2 && keyboards.Count(k => k.EngineId == "native") == 1,
+        "Only the keyboard the native engine opened leaves OpenRGB; the identical second one stays");
+    Check(keyboards.Single(k => k.EngineId == "openrgb").StableId == "openrgb-id-g512-b", "Second identical keyboard keeps its own ID");
+    keyboards = keyboards.Where(k => k.EngineId == "native").ToList();
     Check(keyboards[0].StableId == "openrgb-id-g512", "Native keyboard inherits the OpenRGB ID");
     Check(controller.Devices.Any(d => d.Name == "ENE DRAM" && d.EngineId == "openrgb"), "Other parts stay on OpenRGB");
     var results = controller.Apply();
@@ -112,7 +118,90 @@ using (var controller = new LightingController(takeoverConfig, new ILightingEngi
     Check(fakeOpenRgb.Painted.ContainsKey(1) && !fakeOpenRgb.Painted.ContainsKey(3), "OpenRGB no longer writes to the keyboard");
 
     controller.SetNativeEnabled(false);
-    Check(controller.Devices.Single(d => d.HardwareKey == "usb:046D:C33C").EngineId == "openrgb", "Turning native off hands the keyboard back");
+    Check(controller.Devices.Count(d => d.HardwareKey == "usb:046D:C33C" && d.EngineId == "openrgb") == 2, "Turning native off hands the keyboard back");
+}
+
+Check(openRgbKb.PhysicalKey == "usb:046D:C33C:01:8&1&0" && openRgbKb2.PhysicalKey == "usb:046D:C33C:01:8&2&0" &&
+      openRgbKb.HardwareKey == openRgbKb2.HardwareKey, "Identical keyboards: same model key, different physical keys");
+Check(new LightDevice("x", 0, "x", Array.Empty<LightZone>(), 0, "", @"\\?\hid#vid_046d&pid_c33c&mi_01&col04#8&1&0&0003#{x}").PhysicalKey ==
+      openRgbKb.PhysicalKey, "All collections of one interface share the physical key");
+
+// ---- Recheca antes de escrever: somente leitura ligado entre o cálculo e o envio
+var guardConfig = new AppConfig { Color = "#FF0000", GammaCorrection = false };
+var guardEngine = new StaticEngine("openrgb", new LightDevice("openrgb", 0, "Peça", new[] { new LightZone("Z", 2) }, 2, "peca"));
+using (var controller = new LightingController(guardConfig, new ILightingEngine[] { guardEngine }, new AppLog(null)))
+{
+    controller.Connect(out _);
+    var frame = controller.Render("openrgb", null).Single();
+    guardConfig.ReadOnly = true;
+    var refused = controller.Send(frame.Device, frame.Colors!);
+    Check(refused.Skipped && refused.State == SendState.Skipped && guardEngine.Painted.Count == 0,
+        "Read-only turned on after rendering still blocks the write");
+    guardConfig.ReadOnly = false;
+    guardConfig.DisabledDeviceIds.Add("peca");
+    Check(controller.Send(frame.Device, frame.Colors!).Skipped && guardEngine.Painted.Count == 0,
+        "Device disabled after rendering is not written");
+    guardConfig.DisabledDeviceIds.Clear();
+    Check(controller.Send(frame.Device, frame.Colors!).State == SendState.Sent && guardEngine.Painted.Count == 1, "Normal send still works");
+}
+
+// ---- Limites de envio por capacidade, não por nome
+LightDevice Dev(string engine, string name, string location) =>
+    new(engine, 0, name, Array.Empty<LightZone>(), 1, name, location);
+Check(DeviceSafety.MinIntervalMs(Dev("openrgb", "Algo Novo", "I2C: PIIX4 #0, Address 0x6A")) == DeviceSafety.ConservativeIntervalMs,
+    "Unknown SMBus device gets the conservative limit");
+Check(DeviceSafety.MinIntervalMs(Dev("openrgb", "Algo Sem Local", "")) == DeviceSafety.ConservativeIntervalMs,
+    "Device with no location gets the conservative limit");
+Check(DeviceSafety.MinIntervalMs(Dev("openrgb", "ASRock B450M Steel Legend", "")) == DeviceSafety.ConservativeIntervalMs,
+    "ASRock board stays on the safe limit");
+Check(DeviceSafety.MinIntervalMs(Dev("openrgb", "ENE DRAM", "I2C: PIIX4 #0, Address 0x71")) == 90, "ENE RAM on SMBus: 90 ms");
+Check(DeviceSafety.MinIntervalMs(openRgbKb) == 0, "USB keyboard: no limit");
+
+// ---- Configurações: estragou, volta a última cópia boa
+var configFolder = Path.Combine(Path.GetTempPath(), "abaddon-test-" + Guid.NewGuid().ToString("N"));
+AppConfig.FolderOverride = configFolder;
+try
+{
+    var good = AppConfig.Load();
+    good.Color = "#123456";
+    good.Save();
+    Check(AppConfig.Load().Color == "#123456" && File.Exists(AppConfig.BackupPath), "A good load keeps a backup copy");
+    File.WriteAllText(AppConfig.FilePath, "{ isto não é json");
+    var recovered = AppConfig.Load();
+    Check(recovered.Color == "#123456" && recovered.LoadWarning is not null, "Corrupted config is restored from the last good copy");
+    Check(File.Exists(AppConfig.FilePath + ".corrompido"), "Corrupted file is kept for analysis");
+    Check(AppConfig.Load().LoadWarning is null, "Restored file loads cleanly next time");
+
+    // ---- Atualização: a versão anterior só some depois de confirmada
+    var exe = Path.Combine(configFolder, "AbaddonRGB.exe");
+    File.WriteAllText(exe, "nova");
+    File.WriteAllText(exe + Updater.OldSuffix, "antiga");
+    UpdateGuard.BeginUpdate(configFolder, exe, "v0.5.3", "v0.5.4");
+    Check(UpdateGuard.OnStartup(configFolder, exe, out _) == UpdateGuard.StartDecision.Trial && File.Exists(exe + ".old"),
+        "First start of a new version keeps the old one");
+    UpdateGuard.OnStartup(configFolder, exe, out _);
+    Check(UpdateGuard.OnStartup(configFolder, exe, out var rollbackMessage) == UpdateGuard.StartDecision.RolledBack &&
+          File.ReadAllText(exe) == "antiga" && rollbackMessage.Contains("v0.5.3"), "Repeated failed starts roll back to the old version");
+    Check(UpdateGuard.OnStartup(configFolder, exe, out _) == UpdateGuard.StartDecision.Normal, "After rollback, starts are normal");
+
+    File.WriteAllText(exe + Updater.OldSuffix, "antiga");
+    UpdateGuard.BeginUpdate(configFolder, exe, "v0.5.3", "v0.5.4");
+    UpdateGuard.OnStartup(configFolder, exe, out _);
+    UpdateGuard.Confirm(configFolder, exe);
+    Check(!File.Exists(exe + ".old") && !File.Exists(UpdateGuard.MarkerPath(configFolder)), "Confirmed update removes the old version");
+}
+finally
+{
+    AppConfig.FolderOverride = null;
+    try { Directory.Delete(configFolder, true); } catch { }
+}
+
+// ---- Motor nativo ligado sem teclado não conta como conectado
+var emptyNative = new NativeEngine(new INativeDriver[] { new LogitechKeyboardDriver(new FakeBackend(null)) });
+using (var controller = new LightingController(new AppConfig { UseNativeDrivers = true }, new ILightingEngine[] { emptyNative }, new AppLog(null)))
+{
+    Check(!controller.Connect(out _) && !controller.IsConnected && emptyNative.IsConnected,
+        "Native engine with no keyboard does not count as connected");
 }
 
 // ---- Efeitos
@@ -160,7 +249,8 @@ var fadeConfig = new AppConfig { Color = "#000000", Brightness = 100, GammaCorre
 var slowEngine = new SlowEngine("openrgb", 250,
     new LightDevice("openrgb", 0, "Lenta", new[] { new LightZone("Z", 1) }, 1, "lenta"));
 var fastEngine = new StaticEngine("native",
-    new LightDevice("native", 0, "Rapida", new[] { new LightZone("Z", 1) }, 1, "rapida"));
+    new LightDevice("native", 0, "Rapida", new[] { new LightZone("Z", 1) }, 1, "rapida",
+        @"HID: \\?\hid#vid_046d&pid_c33c&mi_01&col03#8&9&0&0002#{x}"));
 using (var controller = new LightingController(fadeConfig, new ILightingEngine[] { slowEngine, fastEngine }, new AppLog(null)))
 using (var runner = new EffectRunner(controller, () => null))
 {
@@ -295,15 +385,17 @@ sealed class FakeG512 : IHidLink
 
 sealed class FakeBackend : IHidBackend
 {
-    private readonly FakeG512 _keyboard;
-    public FakeBackend(FakeG512 keyboard) => _keyboard = keyboard;
+    private readonly FakeG512? _keyboard;
+    public FakeBackend(FakeG512? keyboard) => _keyboard = keyboard;
 
-    public IReadOnlyList<HidCollectionInfo> Find(int vendorId, IReadOnlyCollection<int> productIds) => new[]
+    public IReadOnlyList<HidCollectionInfo> Find(int vendorId, IReadOnlyCollection<int> productIds) => _keyboard is null
+        ? Array.Empty<HidCollectionInfo>()
+        : new[]
     {
         new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col02#8&1&0&0001#{x}", 0x046D, 0xC33C, 0, 3, "G512", "SN1"),
         new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col03#8&1&0&0002#{x}", 0x046D, 0xC33C, 20, 20, "G512 RGB MECHANICAL GAMING KEYBOARD", "SN1"),
         new HidCollectionInfo(@"\\?\hid#vid_046d&pid_c33c&mi_01&col04#8&1&0&0003#{x}", 0x046D, 0xC33C, 64, 64, "G512 RGB MECHANICAL GAMING KEYBOARD", "SN1"),
     };
 
-    public IHidLink Open(HidCollectionInfo a, HidCollectionInfo b) => _keyboard;
+    public IHidLink Open(HidCollectionInfo a, HidCollectionInfo b) => _keyboard!;
 }

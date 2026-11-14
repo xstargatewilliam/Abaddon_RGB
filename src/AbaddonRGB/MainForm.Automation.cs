@@ -182,7 +182,7 @@ internal sealed partial class MainForm
 
     private void SaveConfigQuietly()
     {
-        try { _config.Save(); } catch { }
+        SaveConfig();
     }
 
     private void OnAutomationPageShown()

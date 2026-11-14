@@ -190,8 +190,12 @@ public sealed class AppConfig
     /// <summary>Versão do formato do arquivo, para migrar configurações antigas.</summary>
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
 
+    /// <summary>Só para testes: troca a pasta das configurações.</summary>
     [JsonIgnore]
-    public static string Folder =>
+    public static string? FolderOverride { get; set; }
+
+    [JsonIgnore]
+    public static string Folder => FolderOverride ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AbaddonRGB");
 
     [JsonIgnore]
@@ -209,13 +213,57 @@ public sealed class AppConfig
 
     private readonly object _saveLock = new();
 
+    /// <summary>Cópia do último config.json que abriu sem erro.</summary>
+    [JsonIgnore]
+    public static string BackupPath => FilePath + ".bak";
+
+    /// <summary>Mensagem para mostrar na tela se o arquivo estava estragado ao abrir (ou null).</summary>
+    [JsonIgnore]
+    public string? LoadWarning { get; private set; }
+
+    /// <summary>Erro do último salvamento (null se deu certo).</summary>
+    [JsonIgnore]
+    public string? LastSaveError { get; private set; }
+
     public static AppConfig Load()
     {
+        if (TryRead(FilePath, out var config))
+        {
+            // Abriu certo: esta passa a ser a cópia de segurança.
+            try { File.Copy(FilePath, BackupPath, overwrite: true); } catch { }
+            return config!;
+        }
+
+        string? warning = null;
+        if (File.Exists(FilePath))
+        {
+            // Arquivo estragado: guarda para análise, sem sobrescrever a cópia boa.
+            try { File.Copy(FilePath, FilePath + ".corrompido", overwrite: true); } catch { }
+
+            if (TryRead(BackupPath, out var backup))
+            {
+                backup!.LoadWarning = "As configurações estavam estragadas. Recuperei a última cópia boa.";
+                try { backup.Save(); } catch { }
+                return backup;
+            }
+
+            warning = "As configurações estavam estragadas e não havia cópia boa. Comecei do padrão " +
+                      "(o arquivo antigo ficou como config.json.corrompido).";
+        }
+
+        var fresh = new AppConfig { LoadWarning = warning };
+        try { fresh.Save(); } catch { }
+        return fresh;
+    }
+
+    private static bool TryRead(string path, out AppConfig? result)
+    {
+        result = null;
         try
         {
-            if (File.Exists(FilePath))
+            if (File.Exists(path))
             {
-                var json = File.ReadAllText(FilePath);
+                var json = File.ReadAllText(path);
                 var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
                 if (config is not null)
                 {
@@ -229,19 +277,31 @@ public sealed class AppConfig
                     config.Normalize();
                     if (config.Migrate())
                         try { config.Save(); } catch { }
-                    return config;
+                    result = config;
+                    return true;
                 }
             }
         }
         catch
         {
-            // Arquivo corrompido: guarda uma cópia e recomeça com o padrão.
-            try { File.Copy(FilePath, FilePath + ".bak", overwrite: true); } catch { }
+            // Arquivo ilegível: quem chamou decide o que fazer.
         }
 
-        var fresh = new AppConfig();
-        try { fresh.Save(); } catch { }
-        return fresh;
+        return false;
+    }
+
+    /// <summary>Salva sem lançar erro; devolve false (e guarda o motivo em LastSaveError) se falhou.</summary>
+    public bool TrySave()
+    {
+        try
+        {
+            Save();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public void Save()
@@ -256,6 +316,12 @@ public sealed class AppConfig
             {
                 File.WriteAllText(temp, JsonSerializer.Serialize(this, JsonOptions));
                 File.Move(temp, FilePath, overwrite: true);
+                LastSaveError = null;
+            }
+            catch (Exception ex)
+            {
+                LastSaveError = ex.Message;
+                throw;
             }
             finally
             {

@@ -9,12 +9,18 @@ on:
   # (Não é mais obrigatório: versões novas na main são publicadas sozinhas.)
   workflow_dispatch:
 
+# Por padrão, só leitura. Apenas o job "release" (abaixo) pode escrever no repositório,
+# e ele não roda em pull requests.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,19 +62,39 @@ jobs:
           if (-not $version) { throw "Não achei <Version> no AbaddonRGB.csproj" }
           "tag=v$version" >> $env:GITHUB_OUTPUT
 
-      # Publicação automática: num push na main, se ainda não existe release com a
-      # versão do .csproj, ela é criada. Commits que não mudam a versão (só texto,
-      # roteiro etc.) não geram release nenhuma.
+  # Publicação: separada da compilação, com permissão de escrita só aqui.
+  # Num push na main, se ainda não existe release com a versão do .csproj, ela é criada.
+  # Commits que não mudam a versão (só texto, roteiro etc.) não geram release nenhuma.
+  release:
+    needs: build
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Ver se esta versão já foi publicada
         id: published
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
-          gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
-          $global:LASTEXITCODE = 0
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: >
+          github.event_name == 'workflow_dispatch' ||
+          startsWith(github.ref, 'refs/tags/v') ||
+          steps.published.outputs.exists == 'false'
+        with:
+          name: AbaddonRGB-win-x64
+          path: publish
 
       - name: Criar release (versão nova na main, botão Run workflow ou tag v*)
         if: >
@@ -77,9 +103,9 @@ jobs:
           steps.published.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.build.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Abaddon RGB ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag }}
+          name: Abaddon RGB ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.build.outputs.tag }}
           files: |
             publish/AbaddonRGB.exe
             publish/AbaddonRGB.exe.sha256

@@ -10,8 +10,8 @@ namespace AbaddonRGB.Core;
 /// Envia as cores às peças, de forma suave.
 /// - Cada motor (OpenRGB, nativo) tem o seu processo: uma peça lenta não atrasa as outras.
 /// - Toda mudança de cor passa por uma transição curta (fade), nos efeitos e quando você troca a cor.
-/// - Peças no barramento da placa recebem menos quadros por segundo, para não sobrecarregá-lo:
-///   memórias ~11 por segundo, placa ASRock (e o que está ligado nela, como o cooler) 4 por segundo.
+/// - Cada peça tem um limite de envios por segundo (veja <see cref="DeviceSafety"/>):
+///   peças desconhecidas e a placa ASRock ficam no limite seguro de 4 por segundo.
 /// Fica quase parado quando a cor está fixa e já chegou ao destino.
 /// </summary>
 public sealed class EffectRunner : IDisposable
@@ -19,14 +19,6 @@ public sealed class EffectRunner : IDisposable
     private const int FrameMs = 33;
     private const int IdleMs = 300;
     private const double FadeMs = 140;
-    private const int SlowBusIntervalMs = 90;
-
-    /// <summary>
-    /// Controlador de LED das placas ASRock (Polychrome): é o mais sensível. Com comandos demais
-    /// ele trava e some até a placa ficar sem energia. No máximo 4 envios por segundo.
-    /// </summary>
-    private const int FragileIntervalMs = 250;
-
     private readonly LightingController _controller;
     private readonly Func<RgbColor?> _temperature;
     private readonly Action<RgbColor>? _preview;
@@ -60,7 +52,23 @@ public sealed class EffectRunner : IDisposable
         var waits = _workers.Select(w => w.RequestPassAsync()).ToList();
         Kick();
         await Task.WhenAny(Task.WhenAll(waits), Task.Delay(timeoutMs));
-        return _workers.SelectMany(w => w.LastResults).ToList();
+
+        var results = new List<DeviceResult>();
+        for (var i = 0; i < _workers.Count; i++)
+        {
+            if (waits[i].IsCompleted)
+            {
+                results.AddRange(_workers[i].LastResults);
+                continue;
+            }
+
+            // A rodada ainda não terminou (motor lento): não reaproveita o resultado antigo.
+            foreach (var item in _controller.Render(_workers[i].EngineId, _temperature()))
+                results.Add(item.Skip ?? new DeviceResult(item.Device.Name, item.EngineName, true,
+                    "ainda enviando", State: SendState.Pending));
+        }
+
+        return results;
     }
 
     private void MaybePreview()
@@ -71,18 +79,6 @@ public sealed class EffectRunner : IDisposable
         Interlocked.Exchange(ref _lastPreview, now);
         try { _preview(_controller.EffectPreviewColor()); } catch { }
     }
-
-    private static int MinIntervalMs(LightDevice device) =>
-        IsFragile(device) ? FragileIntervalMs : OnSlowBus(device) ? SlowBusIntervalMs : 0;
-
-    private static bool IsFragile(LightDevice device) =>
-        OnSlowBus(device) &&
-        (device.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) ||
-         device.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase));
-
-    private static bool OnSlowBus(LightDevice device) =>
-        device.Location.Contains("I2C", StringComparison.OrdinalIgnoreCase) ||
-        device.Location.Contains("SMBus", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>O que já está aceso numa peça e o que foi enviado por último.</summary>
     private sealed class DeviceState
@@ -106,6 +102,8 @@ public sealed class EffectRunner : IDisposable
         private int _seenVersion = -1;
 
         public IReadOnlyList<DeviceResult> LastResults { get; private set; } = Array.Empty<DeviceResult>();
+
+        public string EngineId => _engineId;
 
         public Worker(EffectRunner owner, string engineId)
         {
@@ -252,14 +250,15 @@ public sealed class EffectRunner : IDisposable
 
                 if (state.Sent is not null && state.Sent.AsSpan().SequenceEqual(output))
                 {
-                    results.Add(new DeviceResult(device.Name, item.EngineName, true));
+                    results.Add(new DeviceResult(device.Name, item.EngineName, true, State: SendState.Unchanged));
                     continue;
                 }
 
-                if (now - state.LastSend < MinIntervalMs(device))
+                if (now - state.LastSend < DeviceSafety.MinIntervalMs(device))
                 {
+                    // Ainda não pode enviar (limite por segundo): fica para a próxima rodada.
                     moving = true;
-                    results.Add(new DeviceResult(device.Name, item.EngineName, true));
+                    results.Add(new DeviceResult(device.Name, item.EngineName, true, "aguardando", State: SendState.Pending));
                     continue;
                 }
 

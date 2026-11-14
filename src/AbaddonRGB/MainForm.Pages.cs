@@ -338,7 +338,7 @@ internal sealed partial class MainForm
             if (_syncing) return;
             _config.EffectSpeed = SpeedFromSlider();
         };
-        _speedSlider.Committed += (_, _) => { try { _config.Save(); } catch { } };
+        _speedSlider.Committed += (_, _) => { SaveConfig(); };
         pcCard.Controls.Add(_speedSlider);
         UpdateEffectHint();
 
@@ -574,7 +574,7 @@ internal sealed partial class MainForm
         if (name.Length > 0)
             _config.Nicknames.Add(new Nickname { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Name = name });
 
-        try { _config.Save(); } catch { }
+        SaveConfig();
         _log.Info(name.Length > 0 ? $"\"{original}\" agora se chama \"{name}\"." : $"\"{original}\" voltou ao nome original.");
         RefreshDeviceViews();
         SetStatus(name.Length > 0 ? $"Renomeado para \"{name}\"." : "Nome original restaurado.");
@@ -873,7 +873,7 @@ internal sealed partial class MainForm
 
         _config.Profiles.RemoveAll(p => p.Name == name);
         _config.Schedule.Rules.RemoveAll(r => string.Equals(r.Profile, name, StringComparison.OrdinalIgnoreCase));
-        try { _config.Save(); } catch { }
+        SaveConfig();
         _log.Info($"Perfil \"{name}\" excluído.");
         RefreshProfileList();
         RefreshRuleList();
@@ -924,7 +924,7 @@ internal sealed partial class MainForm
             try
             {
                 await Task.Run(() => _controller.SetNativeEnabled(enabled));
-                try { _config.Save(); } catch { }
+                SaveConfig();
             }
             catch (Exception ex)
             {
@@ -952,7 +952,7 @@ internal sealed partial class MainForm
         _readOnlyCheck.CheckedChanged += (_, _) =>
         {
             _config.ReadOnly = _readOnlyCheck.Checked;
-            try { _config.Save(); } catch { }
+            SaveConfig();
             _log.Info("Modo somente leitura " + (_config.ReadOnly ? "ligado." : "desligado."));
             if (!_config.ReadOnly) _ = ApplyAsync();
         };
@@ -997,7 +997,7 @@ internal sealed partial class MainForm
         _autoUpdateCheck.CheckedChanged += (_, _) =>
         {
             _config.AutoUpdate = _autoUpdateCheck.Checked;
-            try { _config.Save(); } catch { }
+            SaveConfig();
         };
 
         var updateButton = Ui.Button("Procurar atualização");
@@ -1045,7 +1045,7 @@ internal sealed partial class MainForm
             _log.Info(!_startupCheck.Checked
                 ? "Inicialização com o Windows desligada."
                 : _adminCheck.Checked
-                    ? "Inicialização com o Windows ligada, como administrador."
+                    ? $"Inicialização com o Windows ligada, como administrador (abre a cópia protegida em {StartupManager.ProtectedExe})."
                     : "Inicialização com o Windows ligada.");
         }
         catch (Exception ex)
@@ -1129,7 +1129,7 @@ internal sealed partial class MainForm
     {
         try
         {
-            if (select) _config.Save();
+            if (select) SaveConfig();
             else Directory.CreateDirectory(path);
             System.Diagnostics.Process.Start("explorer.exe", select ? $"/select,\"{path}\"" : $"\"{path}\"");
         }

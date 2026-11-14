@@ -18,7 +18,7 @@ public static class Updater
     public const string AssetName = "AbaddonRGB.exe";
     public const string ChecksumAssetName = "AbaddonRGB.exe.sha256";
 
-    private const string OldSuffix = ".old";
+    public const string OldSuffix = ".old";
 
     private static readonly HttpClient Http = CreateClient();
 

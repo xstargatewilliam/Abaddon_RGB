@@ -31,6 +31,12 @@ public sealed class NativeEngine : ILightingEngine
     public int DriverCount => _drivers.Count;
     public bool IsConnected => _connected && _drivers.Count > 0;
 
+    /// <summary>
+    /// True se algum aparelho foi encontrado. Ligado sem aparelhos (teclado desconectado
+    /// ou modelo não suportado) não conta como "conectado" para o resto do programa.
+    /// </summary>
+    public bool HasDevices => _owners.Count > 0;
+
     public bool TryConnect(out string? error)
     {
         error = _drivers.Count == 0 ? "nenhum driver nativo instalado ainda" : null;

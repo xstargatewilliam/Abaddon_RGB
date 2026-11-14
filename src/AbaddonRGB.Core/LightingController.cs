@@ -2,8 +2,28 @@ using AbaddonRGB.Core.Engines;
 
 namespace AbaddonRGB.Core;
 
+/// <summary>Em que pé está o envio de cor a uma peça.</summary>
+public enum SendState
+{
+    /// <summary>A peça recebeu o comando.</summary>
+    Sent,
+
+    /// <summary>A peça já mostrava esta cor: nada a enviar.</summary>
+    Unchanged,
+
+    /// <summary>Ainda não enviado (limite de envios por segundo); vai na próxima rodada.</summary>
+    Pending,
+
+    /// <summary>De propósito ficou de fora (somente leitura, peça desativada, sem LEDs).</summary>
+    Skipped,
+
+    /// <summary>O envio falhou.</summary>
+    Failed,
+}
+
 /// <summary>Resultado da aplicação de cor em uma peça.</summary>
-public sealed record DeviceResult(string Name, string Engine, bool Success, string? Note = null, bool Skipped = false);
+public sealed record DeviceResult(string Name, string Engine, bool Success, string? Note = null, bool Skipped = false,
+    SendState State = SendState.Sent);
 
 /// <summary>Cores calculadas para uma peça (Colors) ou o motivo de ela ficar de fora (Skip).</summary>
 public sealed record RenderedDevice(LightDevice Device, string EngineName, RgbColor[]? Colors, DeviceResult? Skip);
@@ -73,10 +93,17 @@ public sealed class LightingController : IDisposable
     public AppConfig Config { get; }
     public AppLog Log { get; }
 
+    /// <summary>
+    /// Algum motor conectado e útil. O motor nativo ligado sem nenhum aparelho não conta:
+    /// sem isso, com o OpenRGB fora do ar o programa achava que estava tudo conectado.
+    /// </summary>
     public bool IsConnected
     {
-        get { lock (_lock) return _engines.Any(e => e.IsConnected); }
+        get { lock (_lock) return _engines.Any(Useful); }
     }
+
+    private static bool Useful(ILightingEngine engine) =>
+        engine.IsConnected && (engine is not NativeEngine native || native.HasDevices);
 
     /// <summary>As peças vistas na última detecção.</summary>
     public IReadOnlyList<LightDevice> Devices
@@ -102,7 +129,10 @@ public sealed class LightingController : IDisposable
 
                 bool ok;
                 string? engineError;
-                try { ok = engine.TryConnect(out engineError); }
+                try
+                {
+                    lock (EngineLock(engine.Id)) ok = engine.TryConnect(out engineError);
+                }
                 catch (Exception ex) { ok = false; engineError = ex.Message; }
                 var changed = !_errors.TryGetValue(engine.Id, out var previous) || previous != engineError;
                 _errors[engine.Id] = ok ? null : engineError;
@@ -118,9 +148,8 @@ public sealed class LightingController : IDisposable
                 if (!ok && engine.Id == OpenRgbEngine.EngineId) error = engineError;
             }
 
-            var any = _engines.Any(e => e.IsConnected);
-            if (any) RefreshDevicesLocked();
-            return any;
+            if (_engines.Any(e => e.IsConnected)) RefreshDevicesLocked();
+            return _engines.Any(Useful);
         }
     }
 
@@ -141,7 +170,8 @@ public sealed class LightingController : IDisposable
         {
             try
             {
-                found.AddRange(engine.GetDevices());
+                // A detecção pode abrir e fechar aparelhos: mesma trava do envio.
+                lock (EngineLock(engine.Id)) found.AddRange(engine.GetDevices());
             }
             catch (Exception ex)
             {
@@ -150,25 +180,26 @@ public sealed class LightingController : IDisposable
             }
         }
 
-        // Lembra o ID que o OpenRGB dá a cada aparelho USB, para o motor nativo herdar.
+        // Lembra o ID que o OpenRGB dá a cada aparelho físico USB, para o motor nativo herdar.
         var idsChanged = false;
-        foreach (var device in found.Where(d => d.EngineId != NativeEngine.EngineId && d.HardwareKey.Length > 0))
+        foreach (var device in found.Where(d => d.EngineId != NativeEngine.EngineId && d.PhysicalKey.Length > 0))
         {
-            if (Config.HardwareIds.TryGetValue(device.HardwareKey, out var known) && known == device.StableId) continue;
-            Config.HardwareIds[device.HardwareKey] = device.StableId;
+            if (Config.HardwareIds.TryGetValue(device.PhysicalKey, out var known) && known == device.StableId) continue;
+            Config.HardwareIds[device.PhysicalKey] = device.StableId;
             idsChanged = true;
         }
 
-        // A mesma peça vista pelo motor nativo e pelo OpenRGB: fica só a do nativo, com o ID antigo.
-        var nativeKeys = found.Where(d => d.EngineId == NativeEngine.EngineId && d.HardwareKey.Length > 0)
-            .Select(d => d.HardwareKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // A mesma peça física vista pelo motor nativo e pelo OpenRGB: fica só a do nativo, com o ID antigo.
+        // Compara pela peça física (interface + instância do Windows), não pelo modelo:
+        // com dois teclados iguais, só sai do OpenRGB aquele que o nativo realmente abriu.
+        var nativeKeys = found.Where(d => d.EngineId == NativeEngine.EngineId && d.PhysicalKey.Length > 0)
+            .Select(d => d.PhysicalKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (nativeKeys.Count > 0)
         {
             var before = found.Count;
             found = found
-                .Where(d => d.EngineId == NativeEngine.EngineId || !nativeKeys.Contains(d.HardwareKey))
-                .Select(d => d.EngineId == NativeEngine.EngineId && d.HardwareKey.Length > 0 &&
-                             Config.HardwareIds.TryGetValue(d.HardwareKey, out var inherited)
+                .Where(d => d.EngineId == NativeEngine.EngineId || !nativeKeys.Contains(d.PhysicalKey))
+                .Select(d => d.EngineId == NativeEngine.EngineId && InheritedId(d) is { } inherited
                     ? d with { StableId = inherited }
                     : d)
                 .ToList();
@@ -181,7 +212,7 @@ public sealed class LightingController : IDisposable
 
         if (idsChanged)
         {
-            try { Config.Save(); } catch { }
+            SaveConfig();
         }
 
         // Um único motor pode escrever em cada dispositivo físico. Quando ambos
@@ -226,6 +257,20 @@ public sealed class LightingController : IDisposable
         _devices = unique;
     }
 
+    /// <summary>
+    /// ID que o OpenRGB dava a esta peça. Versões antigas guardavam só o modelo ("usb:046D:C33C");
+    /// esse vale apenas se não houver registro de outra peça do mesmo modelo.
+    /// </summary>
+    private string? InheritedId(LightDevice device)
+    {
+        if (device.PhysicalKey.Length > 0 && Config.HardwareIds.TryGetValue(device.PhysicalKey, out var exact))
+            return exact;
+        if (device.HardwareKey.Length > 0 && Config.HardwareIds.TryGetValue(device.HardwareKey, out var byModel) &&
+            Config.HardwareIds.Keys.Count(k => k.StartsWith(device.HardwareKey + ":", StringComparison.OrdinalIgnoreCase)) <= 1)
+            return byModel;
+        return null;
+    }
+
     /// <summary>Liga ou desliga o motor nativo e redetecta as peças.</summary>
     public void SetNativeEnabled(bool enabled)
     {
@@ -240,7 +285,10 @@ public sealed class LightingController : IDisposable
             {
                 try
                 {
-                    if (native.TryConnect(out var error)) Log.Info("Motor nativo: ligado.");
+                    bool connected;
+                string? error;
+                lock (EngineLock(native.Id)) connected = native.TryConnect(out error);
+                if (connected) Log.Info("Motor nativo: ligado.");
                     else Log.Warn("Motor nativo: " + error);
                 }
                 catch (Exception ex)
@@ -250,7 +298,8 @@ public sealed class LightingController : IDisposable
             }
             else
             {
-                native.Disconnect();
+                // Mesma trava do envio: nenhum quadro é escrito num teclado sendo fechado.
+                lock (EngineLock(native.Id)) native.Disconnect();
                 Log.Info("Motor nativo: desligado. As peças voltam para o OpenRGB.");
             }
 
@@ -304,7 +353,7 @@ public sealed class LightingController : IDisposable
                 var cacheKey = CacheKey(device);
                 if (effectFrame && _lastSent.TryGetValue(cacheKey, out var previous) && previous.AsSpan().SequenceEqual(colors))
                 {
-                    results.Add(new DeviceResult(device.Name, item.EngineName, true));
+                    results.Add(new DeviceResult(device.Name, item.EngineName, true, State: SendState.Unchanged));
                     continue;
                 }
 
@@ -337,7 +386,15 @@ public sealed class LightingController : IDisposable
 
         try
         {
-            lock (EngineLock(engine.Id)) engine.SetColors(device, colors);
+            lock (EngineLock(engine.Id))
+            {
+                // Confere de novo logo antes de escrever: o quadro foi calculado antes, e nesse meio-tempo
+                // a pessoa pode ter ligado o somente leitura, desativado a peça ou a peça pode ter sumido.
+                var refusal = WriteRefusal(device);
+                if (refusal is not null)
+                    return new DeviceResult(device.Name, engine.DisplayName, false, refusal, Skipped: true, State: SendState.Skipped);
+                engine.SetColors(device, colors);
+            }
             lock (_lock)
             {
                 _lastSent[CacheKey(device)] = colors;
@@ -349,6 +406,26 @@ public sealed class LightingController : IDisposable
         catch (Exception ex)
         {
             lock (_lock) return Failed(engine, device, ex, quietRepeats: true);
+        }
+    }
+
+    /// <summary>Salva a configuração; se falhar, registra o motivo em vez de engolir o erro.</summary>
+    public bool SaveConfig()
+    {
+        if (Config.TrySave()) return true;
+        Log.Warn("Não foi possível salvar as configurações: " + Config.LastSaveError);
+        return false;
+    }
+
+    private string? WriteRefusal(LightDevice device)
+    {
+        lock (_lock)
+        {
+            if (Config.ReadOnly) return "somente leitura";
+            if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
+            if (!_devices.Any(d => d.EngineId == device.EngineId && d.Index == device.Index && d.StableId == device.StableId))
+                return "peça não está mais conectada";
+            return null;
         }
     }
 
@@ -383,7 +460,7 @@ public sealed class LightingController : IDisposable
             Log.Warn($"Motor {engine.DisplayName}: conexão perdida.");
         }
 
-        return new DeviceResult(device.Name, engine.DisplayName, false, ex.Message);
+        return new DeviceResult(device.Name, engine.DisplayName, false, ex.Message, State: SendState.Failed);
     }
 
     private List<RenderedDevice> RenderLocked(RgbColor? temperatureColor, bool onlyTemperatureTarget, string? engineId)
@@ -445,7 +522,7 @@ public sealed class LightingController : IDisposable
             if (Config.IsDisabled(device.Name, device.StableId))
             {
                 output.Add(new RenderedDevice(device, engine.DisplayName, null,
-                    new DeviceResult(device.Name, engine.DisplayName, false, "não controlada", Skipped: true)));
+                    new DeviceResult(device.Name, engine.DisplayName, false, "não controlada", Skipped: true, State: SendState.Skipped)));
                 continue;
             }
 
@@ -465,14 +542,14 @@ public sealed class LightingController : IDisposable
             if (colors.Length == 0)
             {
                 output.Add(new RenderedDevice(device, engine.DisplayName, null,
-                    new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true)));
+                    new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true, State: SendState.Skipped)));
                 continue;
             }
 
             if (Config.ReadOnly)
             {
                 output.Add(new RenderedDevice(device, engine.DisplayName, null,
-                    new DeviceResult(device.Name, engine.DisplayName, false, "somente leitura", Skipped: true)));
+                    new DeviceResult(device.Name, engine.DisplayName, false, "somente leitura", Skipped: true, State: SendState.Skipped)));
                 continue;
             }
 
@@ -495,7 +572,7 @@ public sealed class LightingController : IDisposable
             Config.Effect = profile.Effect;
             Config.EffectSpeed = profile.EffectSpeed;
             Config.Overrides = profile.Overrides.Select(o => o.Clone()).ToList();
-            try { Config.Save(); } catch { }
+            SaveConfig();
             Log.Info($"Perfil \"{profile.Name}\" carregado ({profile.Color}, brilho {profile.Brightness}%).");
             return true;
         }
@@ -519,7 +596,7 @@ public sealed class LightingController : IDisposable
             profile.Effect = Config.Effect;
             profile.EffectSpeed = Config.EffectSpeed;
             profile.Overrides = Config.Overrides.Select(o => o.Clone()).ToList();
-            try { Config.Save(); } catch { }
+            SaveConfig();
             Log.Info($"Perfil \"{profile.Name}\" salvo.");
             return profile;
         }

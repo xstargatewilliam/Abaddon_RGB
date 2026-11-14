@@ -30,8 +30,25 @@ internal static class Program
 
         try
         {
+            // A versão anterior (".old") só é apagada depois que esta abrir bem (MainForm confirma).
+            // Se esta versão já caiu duas vezes logo ao abrir, a anterior volta para o lugar.
             var exe = Environment.ProcessPath;
-            if (exe is not null) Updater.CleanupOldVersion(exe);
+            if (exe is not null)
+            {
+                string message = "";
+                UpdateGuard.StartDecision decision;
+                try { decision = UpdateGuard.OnStartup(AppConfig.Folder, exe, out message); }
+                catch { decision = UpdateGuard.StartDecision.Normal; }
+
+                if (decision == UpdateGuard.StartDecision.RolledBack)
+                {
+                    MessageBox.Show(message, "Abaddon RGB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    // "--updated" faz a cópia restaurada esperar esta fechar e soltar o mutex.
+                    try { UpdateGuard.Relaunch(exe, UpdatedArgument + (startInTray ? " " + StartupManager.TrayArgument : "")); }
+                    catch { }
+                    return;
+                }
+            }
 
             ApplicationConfiguration.Initialize();
             Application.Run(new MainForm(startInTray, justUpdated,

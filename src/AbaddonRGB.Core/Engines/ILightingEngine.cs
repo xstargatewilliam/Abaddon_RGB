@@ -9,8 +9,8 @@ public sealed record LightDevice(string EngineId, int Index, string Name, IReadO
     string StableId = "", string Location = "")
 {
     /// <summary>
-    /// Identificador do aparelho USB ("usb:046D:C33C"), tirado da localização, ou "" se não houver.
-    /// Serve para reconhecer a mesma peça vista por dois motores (OpenRGB e nativo).
+    /// Modelo do aparelho USB ("usb:046D:C33C"), tirado da localização, ou "" se não houver.
+    /// Identifica o modelo, não a peça: para isso use <see cref="PhysicalKey"/>.
     /// </summary>
     public string HardwareKey
     {
@@ -22,6 +22,32 @@ public sealed record LightDevice(string EngineId, int Index, string Name, IReadO
             return match.Success
                 ? $"usb:{match.Groups[1].Value.ToUpperInvariant()}:{match.Groups[2].Value.ToUpperInvariant()}"
                 : "";
+        }
+    }
+
+    /// <summary>
+    /// Identificador do aparelho físico USB: modelo + interface + instância do Windows
+    /// ("usb:046D:C33C:01:8&amp;119ba01&amp;0"). Dois teclados iguais têm chaves diferentes.
+    /// "" se a localização não for um caminho HID.
+    /// </summary>
+    public string PhysicalKey
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Location)) return "";
+            var match = System.Text.RegularExpressions.Regex.Match(Location,
+                @"vid_([0-9a-f]{4})&pid_([0-9a-f]{4})(?:&mi_([0-9a-f]{2}))?[^#]*#([^#]+)#",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!match.Success) return "";
+
+            // A instância termina com o número da coleção ("&0002"), que muda entre coleções
+            // da mesma interface: fica de fora.
+            var instance = match.Groups[4].Value.ToLowerInvariant();
+            var last = instance.LastIndexOf('&');
+            if (last > 0) instance = instance[..last];
+
+            var mi = match.Groups[3].Success ? match.Groups[3].Value : "--";
+            return $"usb:{match.Groups[1].Value.ToUpperInvariant()}:{match.Groups[2].Value.ToUpperInvariant()}:{mi}:{instance}";
         }
     }
 
