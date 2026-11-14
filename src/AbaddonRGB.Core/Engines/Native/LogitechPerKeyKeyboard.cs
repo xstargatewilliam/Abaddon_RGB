@@ -29,7 +29,7 @@ public sealed class LogitechPerKeyKeyboard
     /// <summary>Quantos quadros podem ficar sem confirmação ao mesmo tempo.</summary>
     private const int Window = 4;
     private const int AckWaitMs = 60;
-    private const int TailMs = 250;
+    private const int TailMs = 120;
     private const int FlushTimeoutMs = 250;
     private const int BusyPollMs = 20;
 
@@ -38,6 +38,13 @@ public sealed class LogitechPerKeyKeyboard
 
     private readonly HidPpChannel _channel;
     private byte _index;
+
+    /// <summary>
+    /// Se o teclado confirma cada pacote de cor. Se um quadro inteiro passa sem nenhuma
+    /// confirmação, paramos de esperar por elas (senão cada quadro perde ~0,5 s).
+    /// </summary>
+    private bool _acksSeen = true;
+    private int _confirmed;
 
     public LogitechPerKeyKeyboard(HidPpChannel channel) => _channel = channel;
 
@@ -151,6 +158,7 @@ public sealed class LogitechPerKeyKeyboard
 
         var link = _channel.Link;
         link.Drain();
+        _confirmed = 0;
 
         var sent = 0;
         var answered = 0;
@@ -160,7 +168,7 @@ public sealed class LogitechPerKeyKeyboard
         {
             foreach (var payload in BuildSetKeyPayloads(keyType, keys))
             {
-                while (sent - answered >= Window)
+                while (_acksSeen && sent - answered >= Window)
                 {
                     if (!ReadOne(AckWaitMs, ref answered, ref rejected)) { answered = sent; break; }
                 }
@@ -171,11 +179,13 @@ public sealed class LogitechPerKeyKeyboard
         }
 
         var tailDeadline = Environment.TickCount64 + TailMs;
-        while (answered < sent)
+        while (_acksSeen && answered < sent)
         {
             var remaining = (int)Math.Min(AckWaitMs, tailDeadline - Environment.TickCount64);
             if (remaining <= 0 || !ReadOne(remaining, ref answered, ref rejected)) break;
         }
+
+        if (sent > 0 && _confirmed == 0) _acksSeen = false;
 
         // fn5 FlushLeds: o teclado só mostra as cores depois disto. "Ocupado" (0x08) = tentar de novo.
         var flushDeadline = Environment.TickCount64 + FlushTimeoutMs * 4;
@@ -211,6 +221,7 @@ public sealed class LogitechPerKeyKeyboard
             var ack = _channel.Match(report, _index, FnSetKeyColors);
             if (ack is null) continue;
             answered++;
+            _confirmed++;
             if (!ack.Ok) rejected++;
             return true;
         }

@@ -155,7 +155,51 @@ using (var controller = new LightingController(effectConfig, new ILightingEngine
     Check(effectConfig.Effect == LightEffect.Breathing, "Profiles carry the effect");
 }
 
+// ---- Envio suave: transição entre cores e motores independentes
+var fadeConfig = new AppConfig { Color = "#000000", Brightness = 100, GammaCorrection = false, UseNativeDrivers = true };
+var slowEngine = new SlowEngine("openrgb", 250,
+    new LightDevice("openrgb", 0, "Lenta", new[] { new LightZone("Z", 1) }, 1, "lenta"));
+var fastEngine = new StaticEngine("native",
+    new LightDevice("native", 0, "Rapida", new[] { new LightZone("Z", 1) }, 1, "rapida"));
+using (var controller = new LightingController(fadeConfig, new ILightingEngine[] { slowEngine, fastEngine }, new AppLog(null)))
+using (var runner = new EffectRunner(controller, () => null))
+{
+    controller.Connect(out _);
+    var first = runner.ApplyNowAsync(3000).GetAwaiter().GetResult();
+    Check(first.Count(r => r.Success) == 2, "Smooth sender reaches both engines");
+    Check(fastEngine.Painted[0][0] == RgbColor.Black, "First send goes straight to the color");
+
+    fastEngine.History.Clear();
+    fadeConfig.Color = "#FF0000";
+    runner.Kick();
+    Thread.Sleep(700);
+    var reds = fastEngine.History.Select(c => c[0].R).ToList();
+    Check(reds.Count >= 6, $"Fast engine keeps its own pace while the other is slow ({reds.Count} frames)");
+    Check(reds.Any(r => r > 20 && r < 230) && reds.Last() == 255, "Color change fades through in-between values");
+    Check(reds.Zip(reds.Skip(1)).All(p => p.Second >= p.First), "Fade only moves toward the target");
+
+    fastEngine.History.Clear();
+    Thread.Sleep(500);
+    Check(fastEngine.History.Count == 0, "Nothing is sent once the color arrived (static)");
+    runner.ApplyNowAsync(3000).GetAwaiter().GetResult();
+    Check(fastEngine.History.Count == 1, "Apply now resends even an unchanged color");
+}
+
 Console.WriteLine("AbaddonRGB.Core smoke tests passed.");
+
+sealed class SlowEngine : ILightingEngine
+{
+    private readonly LightDevice[] _devices;
+    private readonly int _delayMs;
+    public SlowEngine(string id, int delayMs, params LightDevice[] devices) { Id = id; _delayMs = delayMs; _devices = devices; }
+    public string Id { get; }
+    public string DisplayName => Id;
+    public bool IsConnected { get; private set; }
+    public bool TryConnect(out string? error) { error = null; IsConnected = true; return true; }
+    public IReadOnlyList<LightDevice> GetDevices() => _devices;
+    public void SetColors(LightDevice device, IReadOnlyList<RgbColor> colors) => Thread.Sleep(_delayMs);
+    public void Dispose() { }
+}
 
 sealed class StaticEngine : ILightingEngine
 {
@@ -167,7 +211,12 @@ sealed class StaticEngine : ILightingEngine
     public bool IsConnected { get; private set; }
     public bool TryConnect(out string? error) { error = null; IsConnected = true; return true; }
     public IReadOnlyList<LightDevice> GetDevices() => _devices;
-    public void SetColors(LightDevice device, IReadOnlyList<RgbColor> colors) => Painted[device.Index] = colors.ToArray();
+    public readonly List<RgbColor[]> History = new();
+    public void SetColors(LightDevice device, IReadOnlyList<RgbColor> colors)
+    {
+        Painted[device.Index] = colors.ToArray();
+        lock (History) History.Add(colors.ToArray());
+    }
     public void Dispose() { }
 }
 

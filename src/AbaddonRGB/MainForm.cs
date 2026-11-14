@@ -240,9 +240,16 @@ internal sealed partial class MainForm : Form
             }
 
             var temperature = _config.Temperature.Enabled ? _temperatureColor : null;
-            var results = await Task.Run(() => _controller.Apply(temperature, onlyTemperatureTarget && temperature is not null));
+            if (quiet)
+            {
+                // Efeitos, temperatura e "Identificar": quem envia é o processo de envio, com transição.
+                _effects?.Kick();
+                return;
+            }
 
-            if (quiet) return;
+            var results = _effects is not null
+                ? await _effects.ApplyNowAsync()
+                : await Task.Run(() => _controller.Apply(temperature, onlyTemperatureTarget && temperature is not null));
 
             RefreshDeviceViews();
             var okCount = results.Count(r => r.Success);

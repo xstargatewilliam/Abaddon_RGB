@@ -5,6 +5,9 @@ namespace AbaddonRGB.Core;
 /// <summary>Resultado da aplicação de cor em uma peça.</summary>
 public sealed record DeviceResult(string Name, string Engine, bool Success, string? Note = null, bool Skipped = false);
 
+/// <summary>Cores calculadas para uma peça (Colors) ou o motivo de ela ficar de fora (Skip).</summary>
+public sealed record RenderedDevice(LightDevice Device, string EngineName, RgbColor[]? Colors, DeviceResult? Skip);
+
 /// <summary>Situação de um motor, para a tela de diagnóstico.</summary>
 public sealed record EngineStatus(string Id, string Name, bool Connected, int Devices, string? Error);
 
@@ -22,6 +25,35 @@ public sealed class LightingController : IDisposable
     private readonly System.Diagnostics.Stopwatch _effectClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly Dictionary<string, RgbColor[]> _lastSent = new();
     private readonly HashSet<string> _failing = new();
+    private readonly Dictionary<string, object> _engineLocks = new();
+    private int _devicesVersion;
+
+    /// <summary>
+    /// Muda quando as peças mudam ou um motor reconecta (as peças podem ter perdido as cores).
+    /// Quem guarda o que já foi enviado deve reenviar tudo.
+    /// </summary>
+    public int DevicesVersion => Volatile.Read(ref _devicesVersion);
+
+    private object EngineLock(string engineId)
+    {
+        lock (_engineLocks)
+        {
+            if (!_engineLocks.TryGetValue(engineId, out var gate))
+                _engineLocks[engineId] = gate = new object();
+            return gate;
+        }
+    }
+
+    /// <summary>Motores que existem (conectados ou não), para quem envia quadros.</summary>
+    public IReadOnlyList<string> EngineIds
+    {
+        get { lock (_lock) return _engines.Select(e => e.Id).ToArray(); }
+    }
+
+    public bool IsEngineConnected(string engineId)
+    {
+        lock (_lock) return _engines.Any(e => e.Id == engineId && e.IsConnected);
+    }
 
     /// <summary>Cor do efeito no início do PC agora (para a prévia na tela).</summary>
     public RgbColor EffectPreviewColor()
@@ -75,7 +107,11 @@ public sealed class LightingController : IDisposable
                 var changed = !_errors.TryGetValue(engine.Id, out var previous) || previous != engineError;
                 _errors[engine.Id] = ok ? null : engineError;
 
-                if (ok) Log.Info($"Motor {engine.DisplayName}: conectado.");
+                if (ok)
+                {
+                    Log.Info($"Motor {engine.DisplayName}: conectado.");
+                    Interlocked.Increment(ref _devicesVersion);
+                }
                 else if (changed && engine.Id == OpenRgbEngine.EngineId)
                     Log.Warn($"Motor {engine.DisplayName}: {engineError}");
 
@@ -100,8 +136,6 @@ public sealed class LightingController : IDisposable
 
     private void RefreshDevicesLocked()
     {
-        // Peças redetectadas podem ter perdido as cores: o próximo quadro reenvia tudo.
-        _lastSent.Clear();
         var found = new List<LightDevice>();
         foreach (var engine in _engines.Where(e => e.IsConnected))
         {
@@ -178,6 +212,15 @@ public sealed class LightingController : IDisposable
                 string.Join("; ", unique.Select(d => $"{d.Name} [{d.LedCount} LEDs" +
                     (string.IsNullOrWhiteSpace(d.Location) ? "" : $", {d.Location}") + $", {d.StableId}]"))));
 
+        // Só quando a lista mudou: as peças novas (ou reconectadas) precisam receber tudo de novo.
+        static string ListSignature(IEnumerable<LightDevice> list) =>
+            string.Join("|", list.Select(d => $"{d.EngineId}:{d.Index}:{d.StableId}:{d.LedCount}"));
+        if (ListSignature(unique) != ListSignature(_devices))
+        {
+            _lastSent.Clear();
+            Interlocked.Increment(ref _devicesVersion);
+        }
+
         _devices = unique;
     }
 
@@ -245,118 +288,196 @@ public sealed class LightingController : IDisposable
 
             if (_devices.Count == 0) RefreshDevicesLocked();
 
-            var baseColor = RgbColor.ParseOr(Config.Color, new RgbColor(58, 110, 165));
-            IReadOnlyList<TargetColor> overrides = Config.Overrides.ToArray();
-            TargetColor? top = null;
-
-            var targetDevice = Config.Temperature.TargetDevice;
-            var targetDeviceId = Config.Temperature.TargetDeviceId;
-            var temperatureEverywhere = string.IsNullOrWhiteSpace(targetDevice) &&
-                                        string.IsNullOrWhiteSpace(targetDeviceId);
-            if (temperatureColor is not null)
-            {
-                if (temperatureEverywhere)
-                {
-                    baseColor = temperatureColor.Value;
-                    overrides = Array.Empty<TargetColor>();
-                }
-                else
-                {
-                    top = new TargetColor
-                    {
-                        Device = targetDevice,
-                        DeviceId = targetDeviceId,
-                        Zone = Config.Temperature.TargetZone,
-                        Color = temperatureColor.Value.ToHex(),
-                    };
-                }
-            }
-
-            var corrections = Config.Corrections.ToArray();
             var results = new List<DeviceResult>();
-
-            // Efeito animado: a cor geral passa a variar LED a LED. Temperatura em tudo tem prioridade.
-            var effect = Config.Effect;
-            var animate = Effects.IsAnimated(effect) && !(temperatureColor is not null && temperatureEverywhere);
-            var seconds = _effectClock.Elapsed.TotalSeconds;
-            var devices = _devices.ToArray();
-            var totalLeds = Math.Max(devices.Sum(d => Math.Max(d.LedCount, 1)), 1);
-            var ledsBefore = 0;
-
-            foreach (var device in devices)
+            foreach (var item in RenderLocked(temperatureColor, onlyTemperatureTarget, engineId: null))
             {
-                var firstLed = ledsBefore;
-                ledsBefore += Math.Max(device.LedCount, 1);
-                var deviceSlot = Array.IndexOf(devices, device);
-                var engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
-                if (engine is null) continue;
-
-                if (onlyTemperatureTarget && !temperatureEverywhere &&
-                    !(string.IsNullOrWhiteSpace(targetDeviceId)
-                        ? string.Equals(device.Name, targetDevice, StringComparison.OrdinalIgnoreCase)
-                        : string.Equals(device.StableId, targetDeviceId, StringComparison.OrdinalIgnoreCase)))
-                    continue;
-
-                if (Config.IsDisabled(device.Name, device.StableId))
+                if (item.Skip is not null)
                 {
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "não controlada", Skipped: true));
+                    results.Add(item.Skip);
                     continue;
                 }
 
-                Func<int, RgbColor>? baseForLed = null;
-                if (animate)
-                {
-                    var speed = Config.EffectSpeed;
-                    var fixedBase = baseColor;
-                    // Posição ao longo do PC: as peças em ordem, LED a LED (para a onda atravessar tudo).
-                    baseForLed = led => Effects.ColorAt(effect, speed, seconds, fixedBase,
-                        (firstLed + led + 0.5) / totalLeds, deviceSlot * 4096 + led);
-                }
-
-                var colors = ColorComposer.Build(device, baseColor, Config.Brightness, overrides, corrections, top,
-                    gamma: Config.GammaCorrection, baseForLed: baseForLed);
-                if (colors.Length == 0)
-                {
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true));
-                    continue;
-                }
-
-                if (Config.ReadOnly)
-                {
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, false, "somente leitura", Skipped: true));
-                    continue;
-                }
-
-                var cacheKey = device.EngineId + "|" + device.StableId + "|" + device.Index;
+                var device = item.Device;
+                var colors = item.Colors!;
+                var cacheKey = CacheKey(device);
                 if (effectFrame && _lastSent.TryGetValue(cacheKey, out var previous) && previous.AsSpan().SequenceEqual(colors))
                 {
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, true));
+                    results.Add(new DeviceResult(device.Name, item.EngineName, true));
                     continue;
                 }
 
-                try
-                {
-                    engine.SetColors(device, colors);
-                    _lastSent[cacheKey] = colors;
-                    if (_failing.Remove(cacheKey)) Log.Info($"{device.Name}: voltou a responder.");
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, true));
-                }
-                catch (Exception ex)
-                {
-                    _lastSent.Remove(cacheKey);
-                    results.Add(new DeviceResult(device.Name, engine.DisplayName, false, ex.Message));
-                    if (!effectFrame || _failing.Add(cacheKey)) Log.Error($"{device.Name}: {ex.Message}");
-                    if (!engine.IsConnected)
-                    {
-                        // O motor caiu: esquece as peças dele para redescobrir na próxima conexão.
-                        _devices = _devices.Where(d => d.EngineId != engine.Id).ToList();
-                        Log.Warn($"Motor {engine.DisplayName}: conexão perdida.");
-                    }
-                }
+                results.Add(SendLocked(device, colors, quietRepeats: effectFrame));
             }
 
             return results;
         }
+    }
+
+    /// <summary>
+    /// Calcula a cor de cada LED (sem enviar nada). Usado por quem envia os quadros:
+    /// cada motor envia no seu ritmo, sem esperar os outros.
+    /// </summary>
+    /// <param name="engineId">Só as peças deste motor (null = todas).</param>
+    public IReadOnlyList<RenderedDevice> Render(string? engineId, RgbColor? temperatureColor)
+    {
+        lock (_lock)
+        {
+            return RenderLocked(temperatureColor, onlyTemperatureTarget: false, engineId);
+        }
+    }
+
+    /// <summary>Envia as cores a uma peça (pode ser chamado de vários processos ao mesmo tempo).</summary>
+    public DeviceResult Send(LightDevice device, RgbColor[] colors)
+    {
+        ILightingEngine? engine;
+        lock (_lock) engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
+        if (engine is null) return new DeviceResult(device.Name, device.EngineId, false, "motor desconhecido");
+
+        try
+        {
+            lock (EngineLock(engine.Id)) engine.SetColors(device, colors);
+            lock (_lock)
+            {
+                _lastSent[CacheKey(device)] = colors;
+                if (_failing.Remove(CacheKey(device))) Log.Info($"{device.Name}: voltou a responder.");
+            }
+
+            return new DeviceResult(device.Name, engine.DisplayName, true);
+        }
+        catch (Exception ex)
+        {
+            lock (_lock) return Failed(engine, device, ex, quietRepeats: true);
+        }
+    }
+
+    private static string CacheKey(LightDevice device) => device.EngineId + "|" + device.StableId + "|" + device.Index;
+
+    private DeviceResult SendLocked(LightDevice device, RgbColor[] colors, bool quietRepeats)
+    {
+        var engine = _engines.First(e => e.Id == device.EngineId);
+        try
+        {
+            lock (EngineLock(engine.Id)) engine.SetColors(device, colors);
+            _lastSent[CacheKey(device)] = colors;
+            if (_failing.Remove(CacheKey(device))) Log.Info($"{device.Name}: voltou a responder.");
+            return new DeviceResult(device.Name, engine.DisplayName, true);
+        }
+        catch (Exception ex)
+        {
+            return Failed(engine, device, ex, quietRepeats);
+        }
+    }
+
+    private DeviceResult Failed(ILightingEngine engine, LightDevice device, Exception ex, bool quietRepeats)
+    {
+        var key = CacheKey(device);
+        _lastSent.Remove(key);
+        if (_failing.Add(key) || !quietRepeats) Log.Error($"{device.Name}: {ex.Message}");
+        if (!engine.IsConnected && _devices.Any(d => d.EngineId == engine.Id))
+        {
+            // O motor caiu: esquece as peças dele para redescobrir na próxima conexão.
+            _devices = _devices.Where(d => d.EngineId != engine.Id).ToList();
+            Interlocked.Increment(ref _devicesVersion);
+            Log.Warn($"Motor {engine.DisplayName}: conexão perdida.");
+        }
+
+        return new DeviceResult(device.Name, engine.DisplayName, false, ex.Message);
+    }
+
+    private List<RenderedDevice> RenderLocked(RgbColor? temperatureColor, bool onlyTemperatureTarget, string? engineId)
+    {
+        var baseColor = RgbColor.ParseOr(Config.Color, new RgbColor(58, 110, 165));
+        IReadOnlyList<TargetColor> overrides = Config.Overrides.ToArray();
+        TargetColor? top = null;
+
+        var targetDevice = Config.Temperature.TargetDevice;
+        var targetDeviceId = Config.Temperature.TargetDeviceId;
+        var temperatureEverywhere = string.IsNullOrWhiteSpace(targetDevice) &&
+                                    string.IsNullOrWhiteSpace(targetDeviceId);
+        if (temperatureColor is not null)
+        {
+            if (temperatureEverywhere)
+            {
+                baseColor = temperatureColor.Value;
+                overrides = Array.Empty<TargetColor>();
+            }
+            else
+            {
+                top = new TargetColor
+                {
+                    Device = targetDevice,
+                    DeviceId = targetDeviceId,
+                    Zone = Config.Temperature.TargetZone,
+                    Color = temperatureColor.Value.ToHex(),
+                };
+            }
+        }
+
+        var corrections = Config.Corrections.ToArray();
+        var output = new List<RenderedDevice>();
+
+        // Efeito animado: a cor geral passa a variar LED a LED. Temperatura em tudo tem prioridade.
+        var effect = Config.Effect;
+        var animate = Effects.IsAnimated(effect) && !(temperatureColor is not null && temperatureEverywhere);
+        var seconds = _effectClock.Elapsed.TotalSeconds;
+        var devices = _devices.ToArray();
+        var totalLeds = Math.Max(devices.Sum(d => Math.Max(d.LedCount, 1)), 1);
+        var ledsBefore = 0;
+
+        for (var deviceSlot = 0; deviceSlot < devices.Length; deviceSlot++)
+        {
+            var device = devices[deviceSlot];
+            var firstLed = ledsBefore;
+            ledsBefore += Math.Max(device.LedCount, 1);
+
+            var engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
+            if (engine is null) continue;
+            if (engineId is not null && engine.Id != engineId) continue;
+
+            if (onlyTemperatureTarget && !temperatureEverywhere &&
+                !(string.IsNullOrWhiteSpace(targetDeviceId)
+                    ? string.Equals(device.Name, targetDevice, StringComparison.OrdinalIgnoreCase)
+                    : string.Equals(device.StableId, targetDeviceId, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (Config.IsDisabled(device.Name, device.StableId))
+            {
+                output.Add(new RenderedDevice(device, engine.DisplayName, null,
+                    new DeviceResult(device.Name, engine.DisplayName, false, "não controlada", Skipped: true)));
+                continue;
+            }
+
+            Func<int, RgbColor>? baseForLed = null;
+            if (animate)
+            {
+                var speed = Config.EffectSpeed;
+                var fixedBase = baseColor;
+                var slot = deviceSlot;
+                // Posição ao longo do PC: as peças em ordem, LED a LED (para a onda atravessar tudo).
+                baseForLed = led => Effects.ColorAt(effect, speed, seconds, fixedBase,
+                    (firstLed + led + 0.5) / totalLeds, slot * 4096 + led);
+            }
+
+            var colors = ColorComposer.Build(device, baseColor, Config.Brightness, overrides, corrections, top,
+                gamma: Config.GammaCorrection, baseForLed: baseForLed);
+            if (colors.Length == 0)
+            {
+                output.Add(new RenderedDevice(device, engine.DisplayName, null,
+                    new DeviceResult(device.Name, engine.DisplayName, false, "sem LEDs", Skipped: true)));
+                continue;
+            }
+
+            if (Config.ReadOnly)
+            {
+                output.Add(new RenderedDevice(device, engine.DisplayName, null,
+                    new DeviceResult(device.Name, engine.DisplayName, false, "somente leitura", Skipped: true)));
+                continue;
+            }
+
+            output.Add(new RenderedDevice(device, engine.DisplayName, colors, null));
+        }
+
+        return output;
     }
 
     /// <summary>Copia um perfil salvo para as cores atuais. Não envia nada: chame Apply depois.</summary>

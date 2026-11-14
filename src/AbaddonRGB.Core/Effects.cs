@@ -68,9 +68,9 @@ public static class Effects
         {
             case LightEffect.Breathing:
             {
-                // Sobe e desce suave; nunca apaga de todo para não parecer que desligou.
+                // Sobe e desce suave; não desce abaixo de 12% (perto do zero os LEDs mudam aos saltos).
                 var phase = seconds / period;
-                var level = 0.06 + 0.94 * (0.5 - 0.5 * Math.Cos(2 * Math.PI * phase));
+                var level = 0.12 + 0.88 * (0.5 - 0.5 * Math.Cos(2 * Math.PI * phase));
                 return Multiply(baseColor, level);
             }
 
@@ -86,7 +86,7 @@ public static class Effects
                 var dim = Multiply(baseColor, 0.22);
                 var offset = Hash(ledKey);
                 var phase = Fraction(seconds / period + offset);
-                const double flash = 0.18;
+                const double flash = 0.30;
                 if (phase >= flash) return dim;
                 var intensity = Math.Sin(Math.PI * phase / flash);
                 return RgbColor.Lerp(dim, new RgbColor(255, 255, 255), intensity);
