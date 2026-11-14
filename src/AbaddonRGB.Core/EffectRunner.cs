@@ -10,8 +10,8 @@ namespace AbaddonRGB.Core;
 /// Envia as cores às peças, de forma suave.
 /// - Cada motor (OpenRGB, nativo) tem o seu processo: uma peça lenta não atrasa as outras.
 /// - Toda mudança de cor passa por uma transição curta (fade), nos efeitos e quando você troca a cor.
-/// - Peças no barramento da placa (memórias, placa-mãe) recebem no máximo ~11 quadros por segundo,
-///   para não sobrecarregar o barramento.
+/// - Peças no barramento da placa recebem menos quadros por segundo, para não sobrecarregá-lo:
+///   memórias ~11 por segundo, placa ASRock (e o que está ligado nela, como o cooler) 4 por segundo.
 /// Fica quase parado quando a cor está fixa e já chegou ao destino.
 /// </summary>
 public sealed class EffectRunner : IDisposable
@@ -20,6 +20,12 @@ public sealed class EffectRunner : IDisposable
     private const int IdleMs = 300;
     private const double FadeMs = 140;
     private const int SlowBusIntervalMs = 90;
+
+    /// <summary>
+    /// Controlador de LED das placas ASRock (Polychrome): é o mais sensível. Com comandos demais
+    /// ele trava e some até a placa ficar sem energia. No máximo 4 envios por segundo.
+    /// </summary>
+    private const int FragileIntervalMs = 250;
 
     private readonly LightingController _controller;
     private readonly Func<RgbColor?> _temperature;
@@ -65,6 +71,14 @@ public sealed class EffectRunner : IDisposable
         Interlocked.Exchange(ref _lastPreview, now);
         try { _preview(_controller.EffectPreviewColor()); } catch { }
     }
+
+    private static int MinIntervalMs(LightDevice device) =>
+        IsFragile(device) ? FragileIntervalMs : OnSlowBus(device) ? SlowBusIntervalMs : 0;
+
+    private static bool IsFragile(LightDevice device) =>
+        OnSlowBus(device) &&
+        (device.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) ||
+         device.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase));
 
     private static bool OnSlowBus(LightDevice device) =>
         device.Location.Contains("I2C", StringComparison.OrdinalIgnoreCase) ||
@@ -242,7 +256,7 @@ public sealed class EffectRunner : IDisposable
                     continue;
                 }
 
-                if (OnSlowBus(device) && now - state.LastSend < SlowBusIntervalMs)
+                if (now - state.LastSend < MinIntervalMs(device))
                 {
                     moving = true;
                     results.Add(new DeviceResult(device.Name, item.EngineName, true));

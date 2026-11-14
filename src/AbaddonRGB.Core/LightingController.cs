@@ -217,6 +217,8 @@ public sealed class LightingController : IDisposable
             string.Join("|", list.Select(d => $"{d.EngineId}:{d.Index}:{d.StableId}:{d.LedCount}"));
         if (ListSignature(unique) != ListSignature(_devices))
         {
+            foreach (var gone in _devices.Where(d => !unique.Any(u => u.StableId == d.StableId)))
+                Log.Warn($"{gone.Name} não foi mais encontrada. Se for a placa-mãe, desligue o PC da tomada por 30 s para reiniciar o controlador de LED.");
             _lastSent.Clear();
             Interlocked.Increment(ref _devicesVersion);
         }
