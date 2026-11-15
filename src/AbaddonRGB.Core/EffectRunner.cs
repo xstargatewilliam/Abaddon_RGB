@@ -109,8 +109,11 @@ public sealed class EffectRunner : IDisposable
         {
             _owner = owner;
             _engineId = engineId;
-            new Thread(Loop) { IsBackground = true, Name = "AbaddonRGB envio " + engineId }.Start();
+            Thread = new Thread(Loop) { IsBackground = true, Name = "AbaddonRGB envio " + engineId };
+            Thread.Start();
         }
+
+        public Thread Thread { get; }
 
         public void Kick() => _kick.Set();
 
@@ -254,7 +257,7 @@ public sealed class EffectRunner : IDisposable
                     continue;
                 }
 
-                if (now - state.LastSend < DeviceSafety.MinIntervalMs(device))
+                if (now - state.LastSend < DeviceSafety.MinIntervalMs(device) || controller.MsUntilSendAllowed(device) > 0)
                 {
                     // Ainda não pode enviar (limite por segundo): fica para a próxima rodada.
                     moving = true;
@@ -281,8 +284,19 @@ public sealed class EffectRunner : IDisposable
         }
     }
 
+    /// <summary>
+    /// Desligamento em ordem: para de calcular quadros e espera cada envio em andamento
+    /// terminar (até 2 segundos no total) antes de quem chamou liberar os drivers.
+    /// </summary>
     public void Dispose()
     {
         _stop.Cancel();
+        foreach (var worker in _workers) worker.Kick();
+        var deadline = Environment.TickCount64 + 2000;
+        foreach (var worker in _workers)
+        {
+            var left = (int)Math.Max(0, deadline - Environment.TickCount64);
+            if (worker.Thread != Thread.CurrentThread) worker.Thread.Join(left);
+        }
     }
 }

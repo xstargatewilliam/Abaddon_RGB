@@ -41,6 +41,13 @@ public sealed class LightingController : IDisposable
     private readonly List<ILightingEngine> _engines;
     private readonly Dictionary<string, string?> _errors = new();
     private List<LightDevice> _devices = new();
+
+    // Chaves das peças conectadas agora. Trocado inteiro (nunca alterado) sempre que a lista muda,
+    // para o envio conferir sem pegar _lock enquanto segura a trava do motor.
+    private HashSet<string> _present = new();
+
+    // Último envio real a cada peça (para o limite de envios por segundo).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _lastWrite = new();
     private bool _nativeTakeoverLogged;
     private readonly System.Diagnostics.Stopwatch _effectClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly Dictionary<string, RgbColor[]> _lastSent = new();
@@ -255,6 +262,7 @@ public sealed class LightingController : IDisposable
         }
 
         _devices = unique;
+        PublishPresence();
     }
 
     /// <summary>
@@ -332,6 +340,8 @@ public sealed class LightingController : IDisposable
     public IReadOnlyList<DeviceResult> Apply(RgbColor? temperatureColor = null, bool onlyTemperatureTarget = false,
         bool effectFrame = false)
     {
+        List<RenderedDevice> pending;
+        List<DeviceResult> done;
         lock (_lock)
         {
             if (!_engines.Any(e => e.IsConnected))
@@ -339,7 +349,9 @@ public sealed class LightingController : IDisposable
 
             if (_devices.Count == 0) RefreshDevicesLocked();
 
+            // Calcula tudo com _lock e só envia depois de soltá-lo (veja Send).
             var results = new List<DeviceResult>();
+            var toSend = new List<RenderedDevice>();
             foreach (var item in RenderLocked(temperatureColor, onlyTemperatureTarget, engineId: null))
             {
                 if (item.Skip is not null)
@@ -348,20 +360,23 @@ public sealed class LightingController : IDisposable
                     continue;
                 }
 
-                var device = item.Device;
-                var colors = item.Colors!;
-                var cacheKey = CacheKey(device);
-                if (effectFrame && _lastSent.TryGetValue(cacheKey, out var previous) && previous.AsSpan().SequenceEqual(colors))
+                if (effectFrame && _lastSent.TryGetValue(CacheKey(item.Device), out var previous) &&
+                    previous.AsSpan().SequenceEqual(item.Colors!))
                 {
-                    results.Add(new DeviceResult(device.Name, item.EngineName, true, State: SendState.Unchanged));
+                    results.Add(new DeviceResult(item.Device.Name, item.EngineName, true, State: SendState.Unchanged));
                     continue;
                 }
 
-                results.Add(SendLocked(device, colors, quietRepeats: effectFrame));
+                toSend.Add(item);
             }
 
-            return results;
+            pending = toSend;
+            done = results;
         }
+
+        foreach (var item in pending)
+            done.Add(Send(item.Device, item.Colors!, quietRepeats: effectFrame));
+        return done;
     }
 
     /// <summary>
@@ -377,24 +392,48 @@ public sealed class LightingController : IDisposable
         }
     }
 
-    /// <summary>Envia as cores a uma peça (pode ser chamado de vários processos ao mesmo tempo).</summary>
-    public DeviceResult Send(LightDevice device, RgbColor[] colors)
+    /// <summary>
+    /// Envia as cores a uma peça. É o único caminho que escreve no hardware: todo envio
+    /// passa pelas mesmas conferências (somente leitura, peça desativada, peça conectada)
+    /// e pelo limite de envios por segundo da peça.
+    /// </summary>
+    /// <remarks>
+    /// Ordem das travas, em todo o programa: primeiro _lock, depois a trava do motor.
+    /// Quem segura a trava do motor nunca pede _lock (senão dois processos podem
+    /// ficar esperando um pelo outro para sempre). Por isso a conferência dentro da
+    /// trava do motor usa só cópias que não precisam de _lock.
+    /// </remarks>
+    public DeviceResult Send(LightDevice device, RgbColor[] colors) => Send(device, colors, quietRepeats: true);
+
+    private DeviceResult Send(LightDevice device, RgbColor[] colors, bool quietRepeats)
     {
         ILightingEngine? engine;
-        lock (_lock) engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
-        if (engine is null) return new DeviceResult(device.Name, device.EngineId, false, "motor desconhecido");
+        string? refusal;
+        lock (_lock)
+        {
+            engine = _engines.FirstOrDefault(e => e.Id == device.EngineId);
+            refusal = engine is null ? null : WriteRefusalLocked(device);
+        }
+
+        if (engine is null) return new DeviceResult(device.Name, device.EngineId, false, "motor desconhecido", State: SendState.Failed);
+        if (refusal is not null)
+            return new DeviceResult(device.Name, engine.DisplayName, false, refusal, Skipped: true, State: SendState.Skipped);
 
         try
         {
             lock (EngineLock(engine.Id))
             {
-                // Confere de novo logo antes de escrever: o quadro foi calculado antes, e nesse meio-tempo
-                // a pessoa pode ter ligado o somente leitura, desativado a peça ou a peça pode ter sumido.
-                var refusal = WriteRefusal(device);
+                // Confere de novo logo antes de escrever, sem _lock: nesse meio-tempo a pessoa pode ter
+                // ligado o somente leitura, desativado a peça ou a peça pode ter sumido.
+                refusal = WriteRefusalLockFree(device);
                 if (refusal is not null)
                     return new DeviceResult(device.Name, engine.DisplayName, false, refusal, Skipped: true, State: SendState.Skipped);
+
+                WaitForSendSlot(device);
                 engine.SetColors(device, colors);
+                _lastWrite[CacheKey(device)] = Environment.TickCount64;
             }
+
             lock (_lock)
             {
                 _lastSent[CacheKey(device)] = colors;
@@ -405,9 +444,32 @@ public sealed class LightingController : IDisposable
         }
         catch (Exception ex)
         {
-            lock (_lock) return Failed(engine, device, ex, quietRepeats: true);
+            lock (_lock) return Failed(engine, device, ex, quietRepeats);
         }
     }
+
+    /// <summary>
+    /// Espera o intervalo mínimo da peça (veja <see cref="DeviceSafety"/>) desde o último envio.
+    /// Vale para qualquer caminho de escrita, não só para o envio de efeitos.
+    /// </summary>
+    private void WaitForSendSlot(LightDevice device)
+    {
+        var interval = DeviceSafety.MinIntervalMs(device);
+        if (interval <= 0 || !_lastWrite.TryGetValue(CacheKey(device), out var last)) return;
+        var wait = last + interval - Environment.TickCount64;
+        if (wait > 0) Thread.Sleep((int)Math.Min(wait, interval));
+    }
+
+    /// <summary>Quanto falta (ms) para a peça poder receber outro envio. 0 = pode agora.</summary>
+    public int MsUntilSendAllowed(LightDevice device)
+    {
+        var interval = DeviceSafety.MinIntervalMs(device);
+        if (interval <= 0 || !_lastWrite.TryGetValue(CacheKey(device), out var last)) return 0;
+        return (int)Math.Max(0, last + interval - Environment.TickCount64);
+    }
+
+    private void PublishPresence() =>
+        Volatile.Write(ref _present, _devices.Select(CacheKey).ToHashSet(StringComparer.Ordinal));
 
     /// <summary>Salva a configuração; se falhar, registra o motivo em vez de engolir o erro.</summary>
     public bool SaveConfig()
@@ -417,35 +479,32 @@ public sealed class LightingController : IDisposable
         return false;
     }
 
-    private string? WriteRefusal(LightDevice device)
+    private string? WriteRefusalLocked(LightDevice device)
     {
-        lock (_lock)
+        if (Config.ReadOnly) return "somente leitura";
+        if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
+        if (!_devices.Any(d => CacheKey(d) == CacheKey(device))) return "peça não está mais conectada";
+        return null;
+    }
+
+    private string? WriteRefusalLockFree(LightDevice device)
+    {
+        if (Config.ReadOnly) return "somente leitura";
+        if (!Volatile.Read(ref _present).Contains(CacheKey(device))) return "peça não está mais conectada";
+        try
         {
-            if (Config.ReadOnly) return "somente leitura";
             if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
-            if (!_devices.Any(d => d.EngineId == device.EngineId && d.Index == device.Index && d.StableId == device.StableId))
-                return "peça não está mais conectada";
-            return null;
         }
+        catch (InvalidOperationException)
+        {
+            // A lista de peças desativadas mudou bem neste instante: na dúvida, não escreve.
+            return "configuração mudando";
+        }
+
+        return null;
     }
 
     private static string CacheKey(LightDevice device) => device.EngineId + "|" + device.StableId + "|" + device.Index;
-
-    private DeviceResult SendLocked(LightDevice device, RgbColor[] colors, bool quietRepeats)
-    {
-        var engine = _engines.First(e => e.Id == device.EngineId);
-        try
-        {
-            lock (EngineLock(engine.Id)) engine.SetColors(device, colors);
-            _lastSent[CacheKey(device)] = colors;
-            if (_failing.Remove(CacheKey(device))) Log.Info($"{device.Name}: voltou a responder.");
-            return new DeviceResult(device.Name, engine.DisplayName, true);
-        }
-        catch (Exception ex)
-        {
-            return Failed(engine, device, ex, quietRepeats);
-        }
-    }
 
     private DeviceResult Failed(ILightingEngine engine, LightDevice device, Exception ex, bool quietRepeats)
     {
@@ -456,6 +515,7 @@ public sealed class LightingController : IDisposable
         {
             // O motor caiu: esquece as peças dele para redescobrir na próxima conexão.
             _devices = _devices.Where(d => d.EngineId != engine.Id).ToList();
+            PublishPresence();
             Interlocked.Increment(ref _devicesVersion);
             Log.Warn($"Motor {engine.DisplayName}: conexão perdida.");
         }
@@ -606,8 +666,10 @@ public sealed class LightingController : IDisposable
     {
         lock (_lock)
         {
+            // Mesma ordem de sempre (_lock, depois a trava do motor): não fecha um motor no meio de um envio.
             foreach (var engine in _engines)
-                try { engine.Dispose(); } catch { }
+                lock (EngineLock(engine.Id))
+                    try { engine.Dispose(); } catch { }
         }
     }
 }

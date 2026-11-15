@@ -268,13 +268,17 @@ internal sealed partial class MainForm : Form
                 : await Task.Run(() => _controller.Apply(temperature, onlyTemperatureTarget && temperature is not null));
 
             RefreshDeviceViews();
-            var okCount = results.Count(r => r.Success);
-            var failed = results.Where(r => !r.Success && !r.Skipped).ToList();
+            // Só conta como aplicada a peça que recebeu a cor (ou já estava com ela).
+            // "Aguardando" é a que ainda vai receber na próxima rodada, por causa do limite por segundo.
+            var okCount = results.Count(r => r.State is SendState.Sent or SendState.Unchanged);
+            var pendingCount = results.Count(r => r.State == SendState.Pending);
+            var failed = results.Where(r => r.State == SendState.Failed || (!r.Success && !r.Skipped)).ToList();
             var skipped = results.Count(r => r.Skipped);
 
             var text = _config.ReadOnly
                 ? "Modo somente leitura: nada foi enviado para as peças."
-                : $"{_config.Color} aplicada em {okCount} de {results.Count - skipped} peças, brilho {_config.Brightness}%.";
+                : $"{_config.Color} aplicada em {okCount} de {results.Count - skipped} peças, brilho {_config.Brightness}%." +
+                  (pendingCount > 0 ? $" {pendingCount} aguardando a vez." : "");
             if (failed.Count > 0)
                 text += " Falhou: " + string.Join("; ", failed.Select(f => f.Name + " (" + f.Note + ")")) + ".";
             if (temperature is not null)
@@ -362,9 +366,16 @@ internal sealed partial class MainForm : Form
         await Task.Delay(UpdateGuard.ConfirmAfter);
         var exe = Environment.ProcessPath;
         if (_exiting || exe is null) return;
+
+        // Só confirma uma versão que está controlando peças de fato. Sem nenhuma conexão
+        // (OpenRGB fechado, por exemplo), espera; a versão anterior continua guardada.
+        var pending = File.Exists(UpdateGuard.MarkerPath(AppConfig.Folder));
+        while (pending && !_exiting && !(_controller.IsConnected && _controller.Devices.Count > 0))
+            await Task.Delay(TimeSpan.FromMinutes(1));
+        if (_exiting) return;
+
         try
         {
-            var pending = File.Exists(UpdateGuard.MarkerPath(AppConfig.Folder));
             UpdateGuard.Confirm(AppConfig.Folder, exe);
             if (pending) _log.Info($"Atualização para {VersionText} confirmada: a versão anterior foi apagada.");
         }

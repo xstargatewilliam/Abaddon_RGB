@@ -9,15 +9,16 @@ namespace AbaddonRGB.Core;
 
 /// <summary>
 /// Atualização em duas etapas: a versão nova só é dada como boa depois de ficar aberta
-/// alguns segundos. Até lá a versão anterior fica guardada (".old"). Se a versão nova
-/// fechar com erro logo ao abrir, na terceira tentativa a anterior volta sozinha.
+/// um tempo e controlando peças. Até lá a versão anterior fica guardada (".old").
+/// Só conta como falha uma abertura que terminou sem fechar normalmente (travou ou caiu):
+/// fechar o programa pelo menu não conta. Com duas falhas, a versão anterior volta sozinha.
 /// </summary>
 public static class UpdateGuard
 {
     /// <summary>Quanto tempo a versão nova precisa ficar aberta para ser confirmada.</summary>
     public static readonly TimeSpan ConfirmAfter = TimeSpan.FromSeconds(45);
 
-    /// <summary>Quantas aberturas sem confirmação antes de voltar à versão anterior.</summary>
+    /// <summary>Quantas aberturas que caíram antes de voltar à versão anterior.</summary>
     public const int MaxAttempts = 2;
 
     private sealed class Pending
@@ -25,7 +26,11 @@ public static class UpdateGuard
         public string Exe { get; set; } = "";
         public string FromVersion { get; set; } = "";
         public string ToVersion { get; set; } = "";
-        public int Attempts { get; set; }
+        /// <summary>Aberturas da versão nova que terminaram sem fechar normalmente.</summary>
+        public int Failures { get; set; }
+
+        /// <summary>True enquanto a versão nova está aberta (fica true se ela cair).</summary>
+        public bool Running { get; set; }
     }
 
     public static string MarkerPath(string folder) => Path.Combine(folder, "update-pending.json");
@@ -39,7 +44,6 @@ public static class UpdateGuard
             Exe = exe,
             FromVersion = fromVersion,
             ToVersion = toVersion,
-            Attempts = 0,
         }));
     }
 
@@ -56,8 +60,8 @@ public static class UpdateGuard
     }
 
     /// <summary>
-    /// Chamado no início do programa. Conta a tentativa e, se a versão nova já falhou
-    /// <see cref="MaxAttempts"/> vezes, devolve a versão anterior para o lugar.
+    /// Chamado no início do programa. Se a abertura anterior da versão nova não fechou
+    /// normalmente, conta uma falha; com <see cref="MaxAttempts"/> falhas, devolve a versão anterior.
     /// </summary>
     public static StartDecision OnStartup(string folder, string exe, out string message)
     {
@@ -76,22 +80,74 @@ public static class UpdateGuard
             return StartDecision.Normal;
         }
 
+        // A abertura anterior não chegou a fechar normalmente: foi uma falha.
+        if (pending.Running) pending.Failures++;
+
         var old = exe + Updater.OldSuffix;
-        if (pending.Attempts >= MaxAttempts && File.Exists(old))
+        if (pending.Failures >= MaxAttempts && File.Exists(old))
         {
-            // A versão nova abriu e caiu repetidas vezes: volta para a anterior.
-            var failed = exe + ".failed";
-            TryDelete(failed);
-            File.Move(exe, failed);
-            File.Move(old, exe);
-            TryDelete(marker);
-            message = $"A versão {pending.ToVersion} não abriu direito. Voltei para a {pending.FromVersion}.";
-            return StartDecision.RolledBack;
+            if (TryRestore(exe, old, out var error))
+            {
+                TryDelete(marker);
+                message = $"A versão {pending.ToVersion} caiu {pending.Failures} vezes ao abrir. Voltei para a {pending.FromVersion}.";
+                return StartDecision.RolledBack;
+            }
+
+            // Não deu para trocar os arquivos: segue com a versão nova, que está no lugar.
+            message = $"Não consegui voltar para a {pending.FromVersion}: {error}";
         }
 
-        pending.Attempts++;
+        pending.Running = true;
         File.WriteAllText(marker, JsonSerializer.Serialize(pending));
         return StartDecision.Trial;
+    }
+
+    /// <summary>Chamado quando o programa fecha normalmente: essa abertura não conta como falha.</summary>
+    public static void MarkCleanExit(string folder)
+    {
+        var marker = MarkerPath(folder);
+        try
+        {
+            if (!File.Exists(marker)) return;
+            var pending = JsonSerializer.Deserialize<Pending>(File.ReadAllText(marker));
+            if (pending is null) return;
+            pending.Running = false;
+            File.WriteAllText(marker, JsonSerializer.Serialize(pending));
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Troca a versão nova pela anterior em etapas, desfazendo cada uma se a seguinte falhar:
+    /// nunca deixa o caminho do programa sem um .exe.
+    /// </summary>
+    public static bool TryRestore(string exe, string old, out string error)
+    {
+        error = "";
+        var failed = exe + ".failed";
+        try
+        {
+            TryDelete(failed);
+            File.Move(exe, failed);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false; // nada mudou
+        }
+
+        try
+        {
+            File.Move(old, exe);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            try { File.Move(failed, exe); } // devolve a versão nova para o lugar
+            catch (Exception back) { error += " / " + back.Message; }
+            return false;
+        }
     }
 
     /// <summary>A versão nova ficou aberta o bastante: apaga a anterior e o marcador.</summary>

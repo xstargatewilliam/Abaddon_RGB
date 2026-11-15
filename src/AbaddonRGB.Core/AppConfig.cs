@@ -217,6 +217,10 @@ public sealed class AppConfig
     [JsonIgnore]
     public static string BackupPath => FilePath + ".bak";
 
+    /// <summary>Cópia anterior à <see cref="BackupPath"/> (duas versões recuperáveis).</summary>
+    [JsonIgnore]
+    public static string OlderBackupPath => FilePath + ".bak2";
+
     /// <summary>Mensagem para mostrar na tela se o arquivo estava estragado ao abrir (ou null).</summary>
     [JsonIgnore]
     public string? LoadWarning { get; private set; }
@@ -240,8 +244,9 @@ public sealed class AppConfig
             // Arquivo estragado: guarda para análise, sem sobrescrever a cópia boa.
             try { File.Copy(FilePath, FilePath + ".corrompido", overwrite: true); } catch { }
 
-            if (TryRead(BackupPath, out var backup))
+            foreach (var path in new[] { BackupPath, OlderBackupPath })
             {
+                if (!TryRead(path, out var backup)) continue;
                 backup!.LoadWarning = "As configurações estavam estragadas. Recuperei a última cópia boa.";
                 try { backup.Save(); } catch { }
                 return backup;
@@ -290,6 +295,23 @@ public sealed class AppConfig
         return false;
     }
 
+    /// <summary>
+    /// Depois de cada gravação: a cópia boa anterior vira .bak2 e o arquivo recém-gravado vira .bak.
+    /// Assim a recuperação devolve o último salvamento, não o estado de quando o programa abriu.
+    /// </summary>
+    private static void RotateBackups()
+    {
+        try
+        {
+            if (File.Exists(BackupPath)) File.Copy(BackupPath, OlderBackupPath, overwrite: true);
+            File.Copy(FilePath, BackupPath, overwrite: true);
+        }
+        catch
+        {
+            // Cópia de segurança é bônus: não falha o salvamento por causa dela.
+        }
+    }
+
     /// <summary>Salva sem lançar erro; devolve false (e guarda o motivo em LastSaveError) se falhou.</summary>
     public bool TrySave()
     {
@@ -317,6 +339,7 @@ public sealed class AppConfig
                 File.WriteAllText(temp, JsonSerializer.Serialize(this, JsonOptions));
                 File.Move(temp, FilePath, overwrite: true);
                 LastSaveError = null;
+                RotateBackups();
             }
             catch (Exception ex)
             {

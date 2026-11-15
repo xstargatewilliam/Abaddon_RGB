@@ -145,6 +145,51 @@ using (var controller = new LightingController(guardConfig, new ILightingEngine[
     Check(controller.Send(frame.Device, frame.Colors!).State == SendState.Sent && guardEngine.Painted.Count == 1, "Normal send still works");
 }
 
+// ---- Envio e redetecção ao mesmo tempo não travam (antes: trava cruzada _lock x motor)
+var raceConfig = new AppConfig { Color = "#00FF00", GammaCorrection = false };
+var raceEngine = new SlowEngine("openrgb", 3,
+    new LightDevice("openrgb", 0, "USB", new[] { new LightZone("Z", 1) }, 1, "usb",
+        @"HID: \\?\hid#vid_1234&pid_0001&mi_00&col01#9&1&0&0001#{x}"));
+using (var controller = new LightingController(raceConfig, new ILightingEngine[] { raceEngine }, new AppLog(null)))
+{
+    controller.Connect(out _);
+    var until = Environment.TickCount64 + 1500;
+    var sender = Task.Run(() =>
+    {
+        while (Environment.TickCount64 < until)
+            foreach (var item in controller.Render("openrgb", null))
+                if (item.Colors is not null) controller.Send(item.Device, item.Colors);
+    });
+    var detector = Task.Run(() =>
+    {
+        while (Environment.TickCount64 < until)
+        {
+            controller.RefreshDevices();
+            controller.Connect(out _);
+        }
+    });
+    var applier = Task.Run(() =>
+    {
+        while (Environment.TickCount64 < until) controller.Apply();
+    });
+    Check(Task.WaitAll(new[] { sender, detector, applier }, 10000), "Concurrent send, redetect and apply finish (no deadlock)");
+}
+
+// ---- O limite por segundo vale em qualquer caminho de escrita (aqui, chamando o controlador direto)
+var limitConfig = new AppConfig { Color = "#FF0000", GammaCorrection = false };
+var board = new StaticEngine("openrgb",
+    new LightDevice("openrgb", 0, "ASRock B450M Steel Legend", new[] { new LightZone("LED", 1) }, 1, "placa", "I2C: PIIX4 #0, Address 0x6A"));
+using (var controller = new LightingController(limitConfig, new ILightingEngine[] { board }, new AppLog(null)))
+{
+    controller.Connect(out _);
+    controller.Apply();
+    var watch = System.Diagnostics.Stopwatch.StartNew();
+    controller.Apply();
+    controller.Apply();
+    Check(watch.ElapsedMilliseconds >= 2 * DeviceSafety.ConservativeIntervalMs - 30,
+        $"Direct Apply calls respect the board limit ({watch.ElapsedMilliseconds} ms for 2 sends)");
+}
+
 // ---- Limites de envio por capacidade, não por nome
 LightDevice Dev(string engine, string name, string location) =>
     new(engine, 0, name, Array.Empty<LightZone>(), 1, name, location);
@@ -172,6 +217,22 @@ try
     Check(File.Exists(AppConfig.FilePath + ".corrompido"), "Corrupted file is kept for analysis");
     Check(AppConfig.Load().LoadWarning is null, "Restored file loads cleanly next time");
 
+    // A cópia de segurança acompanha cada salvamento, não só a abertura.
+    var session = AppConfig.Load();
+    session.Color = "#ABCDEF";
+    session.Save();
+    session.Color = "#FEDCBA";
+    session.Save();
+    File.WriteAllText(AppConfig.FilePath, "estragado");
+    File.WriteAllText(AppConfig.BackupPath, "estragado também");
+    Check(AppConfig.Load().Color == "#ABCDEF", "Second backup is used when the first is also corrupted");
+
+    var later = AppConfig.Load();
+    later.Color = "#111111";
+    later.Save();
+    File.WriteAllText(AppConfig.FilePath, "estragado");
+    Check(AppConfig.Load().Color == "#111111", "Recovery returns the latest save, not the state at startup");
+
     // ---- Atualização: a versão anterior só some depois de confirmada
     var exe = Path.Combine(configFolder, "AbaddonRGB.exe");
     File.WriteAllText(exe, "nova");
@@ -184,9 +245,22 @@ try
           File.ReadAllText(exe) == "antiga" && rollbackMessage.Contains("v0.5.3"), "Repeated failed starts roll back to the old version");
     Check(UpdateGuard.OnStartup(configFolder, exe, out _) == UpdateGuard.StartDecision.Normal, "After rollback, starts are normal");
 
+    // Fechar normalmente várias vezes antes da confirmação não é falha.
+    File.WriteAllText(exe, "nova");
     File.WriteAllText(exe + Updater.OldSuffix, "antiga");
     UpdateGuard.BeginUpdate(configFolder, exe, "v0.5.3", "v0.5.4");
-    UpdateGuard.OnStartup(configFolder, exe, out _);
+    for (var i = 0; i < 5; i++)
+    {
+        Check(UpdateGuard.OnStartup(configFolder, exe, out _) == UpdateGuard.StartDecision.Trial, "Normal close does not count as failure");
+        UpdateGuard.MarkCleanExit(configFolder);
+    }
+    Check(File.ReadAllText(exe) == "nova" && File.Exists(exe + ".old"), "No rollback after normal closes");
+
+    // Restauração que falha no meio não deixa o programa sem .exe.
+    File.WriteAllText(exe, "nova");
+    Check(!UpdateGuard.TryRestore(exe, exe + ".nao-existe", out _) && File.ReadAllText(exe) == "nova",
+        "Failed restore puts the new version back");
+
     UpdateGuard.Confirm(configFolder, exe);
     Check(!File.Exists(exe + ".old") && !File.Exists(UpdateGuard.MarkerPath(configFolder)), "Confirmed update removes the old version");
 }

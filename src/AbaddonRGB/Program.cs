@@ -48,12 +48,18 @@ internal static class Program
                     catch { }
                     return;
                 }
+
+                if (message.Length > 0)
+                    MessageBox.Show(message, "Abaddon RGB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
 
             ApplicationConfiguration.Initialize();
             Application.Run(new MainForm(startInTray, justUpdated,
                 sensorFactory: () => new WindowsTemperatureProvider(),
                 nativeProbe: NativeProbe.Run));
+
+            // Chegou aqui = fechou normalmente (não caiu): não conta como falha da atualização.
+            UpdateGuard.MarkCleanExit(AppConfig.Folder);
         }
         finally
         {
