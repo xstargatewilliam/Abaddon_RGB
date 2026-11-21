@@ -3,6 +3,26 @@
 Programa para Windows que controla as luzes RGB do PC inteiro com uma cor só: placa-mãe, cooler, memórias, teclado e mouse.
 Ele usa o [OpenRGB](https://openrgb.org) como "motor": o OpenRGB conversa com o hardware, e o Abaddon RGB manda as cores para ele pelo servidor SDK (porta 6742).
 
+> **Estado: alfa.** Testado em um único PC (lista abaixo). Pode ter falhas e ainda não é um controlador universal.
+> Se for testar, deixe o OpenRGB instalado e mande os registros (aba Sistema → Abrir pasta de registros).
+
+## O que funciona hoje
+
+| O quê | Como |
+|---|---|
+| Windows 10/11, 64 bits | Único sistema suportado (Linux e macOS não) |
+| Placas-mãe, memórias, coolers e fitas RGB | Pelo OpenRGB, quando o OpenRGB reconhece a peça |
+| Teclados Logitech G512, G610, G810, G910 e G Pro (com fio) | Motor nativo **experimental**, sem OpenRGB (aba Sistema). Só o G512 foi testado de verdade |
+| Qualquer outro teclado, mouse ou controlador ARGB | **Não**, a menos que o OpenRGB reconheça |
+
+Reconhecer uma peça não garante que todas as zonas e LEDs dela possam ser controlados: depende do que o próprio aparelho aceita.
+
+**Proteções**
+- Cada peça tem um limite de comandos por segundo. Peças desconhecidas ficam no limite mais seguro (4 por segundo).
+- Somente leitura, "Não controlar esta peça" e peças desconectadas são conferidos logo antes de cada envio.
+- Atualização com SHA-256; a versão anterior fica guardada até a nova provar que funciona, e volta sozinha se a nova cair duas vezes ao abrir.
+- Configurações gravadas de forma atômica, com duas cópias de segurança.
+
 ## O que o programa faz
 
 A interface segue o Design System v1.0 do Abaddon RGB (tema cósmico escuro, roxo e magenta, fonte Oxanium nos títulos): menu lateral, roda de cores, prévia do gabinete na cor atual e rodapé com a temperatura da CPU e da placa de vídeo.
