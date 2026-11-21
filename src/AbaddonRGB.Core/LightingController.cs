@@ -83,7 +83,24 @@ public sealed class LightingController : IDisposable
     }
 
     /// <summary>Cor do efeito no início do PC agora (para a prévia na tela).</summary>
+    private TargetColor? _flash;
+
+    /// <summary>
+    /// Cor temporária (usada pelo "Identificar" para piscar uma peça). Fica só na memória:
+    /// nunca é gravada, então um fechamento no meio do pisca não deixa a peça branca ou apagada.
+    /// </summary>
+    public TargetColor? Flash
+    {
+        get => Volatile.Read(ref _flash);
+        set => Volatile.Write(ref _flash, value);
+    }
+
     public RgbColor EffectPreviewColor()
+    {
+        lock (Config.SyncRoot) return EffectPreviewColorCore();
+    }
+
+    private RgbColor EffectPreviewColorCore()
     {
         var baseColor = RgbColor.ParseOr(Config.Color, new RgbColor(58, 110, 165));
         if (!Effects.IsAnimated(Config.Effect)) return baseColor;
@@ -191,8 +208,11 @@ public sealed class LightingController : IDisposable
         var idsChanged = false;
         foreach (var device in found.Where(d => d.EngineId != NativeEngine.EngineId && d.PhysicalKey.Length > 0))
         {
-            if (Config.HardwareIds.TryGetValue(device.PhysicalKey, out var known) && known == device.StableId) continue;
-            Config.HardwareIds[device.PhysicalKey] = device.StableId;
+            lock (Config.SyncRoot)
+            {
+                if (Config.HardwareIds.TryGetValue(device.PhysicalKey, out var known) && known == device.StableId) continue;
+                Config.HardwareIds[device.PhysicalKey] = device.StableId;
+            }
             idsChanged = true;
         }
 
@@ -236,7 +256,7 @@ public sealed class LightingController : IDisposable
         var migrated = false;
         foreach (var group in unique.GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
             if (group.Count() == 1)
-                migrated |= Config.BindDeviceIdentity(group.Key, group.First().StableId);
+                lock (Config.SyncRoot) migrated |= Config.BindDeviceIdentity(group.Key, group.First().StableId);
         if (migrated)
         {
             try { Config.Save(); }
@@ -270,6 +290,11 @@ public sealed class LightingController : IDisposable
     /// esse vale apenas se não houver registro de outra peça do mesmo modelo.
     /// </summary>
     private string? InheritedId(LightDevice device)
+    {
+        lock (Config.SyncRoot) return InheritedIdCore(device);
+    }
+
+    private string? InheritedIdCore(LightDevice device)
     {
         if (device.PhysicalKey.Length > 0 && Config.HardwareIds.TryGetValue(device.PhysicalKey, out var exact))
             return exact;
@@ -482,7 +507,8 @@ public sealed class LightingController : IDisposable
     private string? WriteRefusalLocked(LightDevice device)
     {
         if (Config.ReadOnly) return "somente leitura";
-        if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
+        lock (Config.SyncRoot)
+            if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
         if (!_devices.Any(d => CacheKey(d) == CacheKey(device))) return "peça não está mais conectada";
         return null;
     }
@@ -491,15 +517,9 @@ public sealed class LightingController : IDisposable
     {
         if (Config.ReadOnly) return "somente leitura";
         if (!Volatile.Read(ref _present).Contains(CacheKey(device))) return "peça não está mais conectada";
-        try
-        {
+        // A trava das configurações é a última trava (veja AppConfig.SyncRoot): pode ser pega aqui.
+        lock (Config.SyncRoot)
             if (Config.IsDisabled(device.Name, device.StableId)) return "não controlada";
-        }
-        catch (InvalidOperationException)
-        {
-            // A lista de peças desativadas mudou bem neste instante: na dúvida, não escreve.
-            return "configuração mudando";
-        }
 
         return null;
     }
@@ -525,8 +545,18 @@ public sealed class LightingController : IDisposable
 
     private List<RenderedDevice> RenderLocked(RgbColor? temperatureColor, bool onlyTemperatureTarget, string? engineId)
     {
+        // Lê todas as opções de uma vez, sem a interface mudando uma lista no meio do cálculo.
+        lock (Config.SyncRoot) return RenderCore(temperatureColor, onlyTemperatureTarget, engineId);
+    }
+
+    private List<RenderedDevice> RenderCore(RgbColor? temperatureColor, bool onlyTemperatureTarget, string? engineId)
+    {
         var baseColor = RgbColor.ParseOr(Config.Color, new RgbColor(58, 110, 165));
-        IReadOnlyList<TargetColor> overrides = Config.Overrides.ToArray();
+        // A cor temporária do "Identificar" entra por último (vence como uma cor própria), sem ir para o config.json.
+        var flash = Flash;
+        IReadOnlyList<TargetColor> overrides = flash is null
+            ? Config.Overrides.ToArray()
+            : Config.Overrides.Append(flash).ToArray();
         TargetColor? top = null;
 
         var targetDevice = Config.Temperature.TargetDevice;
@@ -623,6 +653,7 @@ public sealed class LightingController : IDisposable
     public bool LoadProfile(string? name)
     {
         lock (_lock)
+        lock (Config.SyncRoot)
         {
             var profile = Config.FindProfile(name);
             if (profile is null) return false;
@@ -642,6 +673,7 @@ public sealed class LightingController : IDisposable
     public Profile SaveProfile(string name)
     {
         lock (_lock)
+        lock (Config.SyncRoot)
         {
             name = name.Trim();
             var profile = Config.FindProfile(name);

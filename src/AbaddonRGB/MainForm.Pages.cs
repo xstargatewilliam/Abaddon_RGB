@@ -570,9 +570,12 @@ internal sealed partial class MainForm
         var name = RenameDialog.Ask(this, original, current);
         if (name is null) return;
 
-        _config.Nicknames.RemoveAll(n => n.Matches(tag.Device, tag.Zone, tag.DeviceId));
-        if (name.Length > 0)
-            _config.Nicknames.Add(new Nickname { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Name = name });
+        lock (_config.SyncRoot)
+        {
+            _config.Nicknames.RemoveAll(n => n.Matches(tag.Device, tag.Zone, tag.DeviceId));
+            if (name.Length > 0)
+                _config.Nicknames.Add(new Nickname { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Name = name });
+        }
 
         SaveConfig();
         _log.Info(name.Length > 0 ? $"\"{original}\" agora se chama \"{name}\"." : $"\"{original}\" voltou ao nome original.");
@@ -620,14 +623,18 @@ internal sealed partial class MainForm
         using var dialog = new ColorDialog { FullOpen = true, AnyColor = true, Color = start };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
-        _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
-        _config.Overrides.Add(new TargetColor
+        lock (_config.SyncRoot)
         {
-            Device = tag.Device,
-            DeviceId = tag.DeviceId,
-            Zone = tag.Zone,
-            Color = Ui.FromDrawing(dialog.Color).ToHex(),
-        });
+            _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
+            _config.Overrides.Add(new TargetColor
+            {
+                Device = tag.Device,
+                DeviceId = tag.DeviceId,
+                Zone = tag.Zone,
+                Color = Ui.FromDrawing(dialog.Color).ToHex(),
+            });
+        }
+
         await ApplyAsync();
     }
 
@@ -637,13 +644,16 @@ internal sealed partial class MainForm
         if (tag is null) return;
 
         // Na peça inteira, limpa também as cores próprias das zonas dela.
-        if (tag.Zone.Length == 0)
-            _config.Overrides.RemoveAll(o =>
-                string.IsNullOrWhiteSpace(o.DeviceId)
-                    ? string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase)
-                    : string.Equals(o.DeviceId, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
-        else
-            _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
+        lock (_config.SyncRoot)
+        {
+            if (tag.Zone.Length == 0)
+                _config.Overrides.RemoveAll(o =>
+                    string.IsNullOrWhiteSpace(o.DeviceId)
+                        ? string.Equals(o.Device, tag.Device, StringComparison.OrdinalIgnoreCase)
+                        : string.Equals(o.DeviceId, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
+            else
+                _config.Overrides.RemoveAll(o => o.SameTarget(tag.Device, tag.Zone, tag.DeviceId));
+        }
         await ApplyAsync();
     }
 
@@ -664,11 +674,11 @@ internal sealed partial class MainForm
         var where = tag.Zone.Length > 0 ? $"{tag.Device} › {tag.Zone}" : tag.Device;
         SetStatus($"Piscando: {where}. Veja qual luz do PC está piscando.");
 
-        // Cor temporária: não é salva no config.json.
+        // Cor temporária: fica no controlador, nunca no config.json.
         var flash = new TargetColor { Device = tag.Device, DeviceId = tag.DeviceId, Zone = tag.Zone, Color = "#FFFFFF" };
         try
         {
-            _config.Overrides.Add(flash);
+            _controller.Flash = flash;
             for (var i = 0; i < 4 && !_exiting; i++)
             {
                 flash.Color = "#FFFFFF";
@@ -681,7 +691,7 @@ internal sealed partial class MainForm
         }
         finally
         {
-            _config.Overrides.Remove(flash);
+            _controller.Flash = null;
             _identifying = false;
         }
 
@@ -713,13 +723,16 @@ internal sealed partial class MainForm
 
         // Se alguma zona escolhida já está invertida, o clique desfaz; senão, inverte todas.
         var undo = zones.Any(z => IsSwapped(tag.Device, z, tag.DeviceId));
-        foreach (var zone in zones)
+        lock (_config.SyncRoot)
         {
-            // Só remove correções desta peça e desta zona exata (as regras gerais por nome parcial ficam).
-            _config.Corrections.RemoveAll(c => c.Matches(tag.Device, zone, tag.DeviceId) &&
-                                               string.Equals(c.Zone, zone, StringComparison.OrdinalIgnoreCase));
-            if (!undo)
-                _config.Corrections.Add(new ZoneCorrection { Device = tag.Device, DeviceId = tag.DeviceId, Zone = zone, Order = "GRB" });
+            foreach (var zone in zones)
+            {
+                // Só remove correções desta peça e desta zona exata (as regras gerais por nome parcial ficam).
+                _config.Corrections.RemoveAll(c => c.Matches(tag.Device, zone, tag.DeviceId) &&
+                                                   string.Equals(c.Zone, zone, StringComparison.OrdinalIgnoreCase));
+                if (!undo)
+                    _config.Corrections.Add(new ZoneCorrection { Device = tag.Device, DeviceId = tag.DeviceId, Zone = zone, Order = "GRB" });
+            }
         }
 
         var where = tag.Zone.Length > 0 ? $"{tag.Device} › {tag.Zone}" : tag.Device;
@@ -732,20 +745,22 @@ internal sealed partial class MainForm
         var tag = SelectedTarget();
         if (tag is null) return;
 
-        if (_config.IsDisabled(tag.Device, tag.DeviceId))
+        bool enable;
+        lock (_config.SyncRoot)
         {
-            _config.DisabledDevices.RemoveAll(d => string.Equals(d, tag.Device, StringComparison.OrdinalIgnoreCase));
-            _config.DisabledDeviceIds.RemoveAll(id => string.Equals(id, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
-            _log.Info($"{tag.Device}: voltou a ser controlada.");
-        }
-        else
-        {
-            if (!string.IsNullOrWhiteSpace(tag.DeviceId))
+            enable = _config.IsDisabled(tag.Device, tag.DeviceId);
+            if (enable)
+            {
+                _config.DisabledDevices.RemoveAll(d => string.Equals(d, tag.Device, StringComparison.OrdinalIgnoreCase));
+                _config.DisabledDeviceIds.RemoveAll(id => string.Equals(id, tag.DeviceId, StringComparison.OrdinalIgnoreCase));
+            }
+            else if (!string.IsNullOrWhiteSpace(tag.DeviceId))
                 _config.DisabledDeviceIds.Add(tag.DeviceId);
             else
                 _config.DisabledDevices.Add(tag.Device);
-            _log.Info($"{tag.Device}: não será mais controlada.");
         }
+
+        _log.Info(enable ? $"{tag.Device}: voltou a ser controlada." : $"{tag.Device}: não será mais controlada.");
 
         await ApplyAsync();
     }
@@ -871,8 +886,11 @@ internal sealed partial class MainForm
         if (MessageBox.Show(this, question, "Abaddon RGB", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             return;
 
-        _config.Profiles.RemoveAll(p => p.Name == name);
-        _config.Schedule.Rules.RemoveAll(r => string.Equals(r.Profile, name, StringComparison.OrdinalIgnoreCase));
+        lock (_config.SyncRoot)
+        {
+            _config.Profiles.RemoveAll(p => p.Name == name);
+            _config.Schedule.Rules.RemoveAll(r => string.Equals(r.Profile, name, StringComparison.OrdinalIgnoreCase));
+        }
         SaveConfig();
         _log.Info($"Perfil \"{name}\" excluído.");
         RefreshProfileList();

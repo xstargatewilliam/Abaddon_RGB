@@ -229,8 +229,11 @@ internal sealed partial class MainForm
         }
 
         var time = $"{(int)_ruleHour.Value:00}:{(int)_ruleMinute.Value:00}";
-        _config.Schedule.Rules.RemoveAll(r => r.Time == time);
-        _config.Schedule.Rules.Add(new ScheduleRule { Time = time, Profile = profile });
+        lock (_config.SyncRoot)
+        {
+            _config.Schedule.Rules.RemoveAll(r => r.Time == time);
+            _config.Schedule.Rules.Add(new ScheduleRule { Time = time, Profile = profile });
+        }
         SaveConfigQuietly();
         RefreshRuleList();
         _log.Info($"Regra de horário: às {time} aplicar \"{profile}\".");
