@@ -11,6 +11,14 @@ public sealed class OpenRgbEngine : ILightingEngine
     private readonly HashSet<int> _directModeSet = new();
     private OpenRgbClient? _client;
 
+    // True quando o OpenRGB avisou que a lista de peças mudou (peça ligada/desligada).
+    // Os índices podem ter mudado: até redetectar, nada é enviado, senão um quadro feito
+    // para uma peça rápida (teclado) poderia cair numa lenta (placa) e travá-la.
+    private volatile bool _listChanged;
+
+    /// <summary>True se o OpenRGB avisou que as peças mudaram e ainda não houve redetecção.</summary>
+    public bool NeedsRedetect => _listChanged;
+
     public OpenRgbEngine(Func<(string Host, int Port)> endpoint) => _endpoint = endpoint;
 
     public string Id => EngineId;
@@ -27,6 +35,7 @@ public sealed class OpenRgbEngine : ILightingEngine
         {
             var (host, port) = _endpoint();
             _client = new OpenRgbClient(host, port, name: "Abaddon RGB", autoConnect: true, timeoutMs: 2000);
+            WatchDeviceList(_client);
             return _client.Connected;
         }
         catch (Exception ex)
@@ -42,6 +51,7 @@ public sealed class OpenRgbEngine : ILightingEngine
         if (_client is null) return Array.Empty<LightDevice>();
         try
         {
+            _listChanged = false;
             // Índices podem mudar após reiniciar o OpenRGB: nunca são a identidade da peça.
             var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
             return _client.GetAllControllerData()
@@ -73,6 +83,8 @@ public sealed class OpenRgbEngine : ILightingEngine
         if (_client is null || !_client.Connected)
             throw new InvalidOperationException("Não há conexão com o OpenRGB.");
         if (colors.Count == 0) return;
+        if (_listChanged)
+            throw new InvalidOperationException("A lista de peças do OpenRGB mudou; aguardando redetectar.");
 
         try
         {
@@ -95,6 +107,11 @@ public sealed class OpenRgbEngine : ILightingEngine
             throw;
         }
     }
+
+    /// <summary>Assina o aviso "lista de peças mudou" que o servidor do OpenRGB manda.</summary>
+    private void WatchDeviceList(OpenRgbClient client) => client.DeviceListUpdated += OnDeviceListUpdated;
+
+    private void OnDeviceListUpdated(object? sender, EventArgs e) => _listChanged = true;
 
     private void Disconnect()
     {
