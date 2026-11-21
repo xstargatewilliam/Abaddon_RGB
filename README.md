@@ -69,7 +69,13 @@ A interface segue o Design System v1.0 do Abaddon RGB (tema cósmico escuro, rox
    - se você instalou o OpenRGB **como serviço**, o servidor já roda sozinho;
    - se não, abra o OpenRGB, vá na aba **Servidor SDK** e clique em **Iniciar servidor**. Em Configurações dá para marcar para ele iniciar com o Windows já com o servidor ligado.
 3. Feche o **G HUB** e outros apps de RGB (Polychrome, iCUE etc.) para não brigarem pelas cores.
-4. Baixe o `AbaddonRGB.exe` na página de **Releases** do repositório (ou em **Actions** → último build → *AbaddonRGB-win-x64*) e abra. Não precisa instalar o .NET.
+4. Na página de **Releases** do repositório, baixe o **`AbaddonRGB-Setup.exe`** e abra. O Windows pede permissão (instala em `C:\Program Files\AbaddonRGB`, para todos os usuários) e cria o atalho no menu Iniciar. Não precisa instalar o .NET.
+   - Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações → Executar assim mesmo** (o instalador ainda não tem assinatura digital).
+   - Prefere sem instalar? Baixe o `AbaddonRGB.exe` solto e abra de qualquer pasta.
+
+**Atualizações.** Instalado em Program Files, o programa avisa quando sai versão nova; em **Sistema → Procurar atualização**, ele pede a permissão do Windows, baixa (conferindo o SHA-256) e abre de novo na versão nova. Se estiver aberto como administrador (inicialização no modo administrador), atualiza sem perguntar.
+
+**Desinstalar.** Configurações do Windows → **Aplicativos → Aplicativos instalados** → Abaddon RGB → **Desinstalar**. Remove também a inicialização com o Windows e pergunta se você quer apagar as configurações (`%APPDATA%\AbaddonRGB`).
 
 ## Configurações
 

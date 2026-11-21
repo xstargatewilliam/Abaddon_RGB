@@ -404,6 +404,8 @@ internal sealed partial class MainForm : Form
         if (!_exiting) await CheckForUpdatesAsync(manual: false);
     }
 
+    private bool _notifiedUpdate;
+
     private async Task CheckForUpdatesAsync(bool manual)
     {
         if (_updating || _exiting) return;
@@ -424,6 +426,27 @@ internal sealed partial class MainForm : Form
             }
 
             var newVersion = "v" + update.Version.ToString(3);
+
+            // Instalado em Program Files e aberto sem ser administrador: só dá para atualizar
+            // com a confirmação do Windows. Na checagem automática, só avisa (nada de janela do
+            // Windows aparecendo do nada); a pessoa instala quando clicar.
+            var exePath = Environment.ProcessPath;
+            var needsAdmin = exePath is not null && !Elevation.IsAdministrator && !ElevatedUpdate.CanWriteNextTo(exePath);
+            if (needsAdmin && !manual)
+            {
+                var notice = $"Atualização {newVersion} disponível. Em Sistema, clique em Procurar atualização para instalar " +
+                             "(o Windows vai pedir permissão).";
+                SetStatus(notice);
+                _log.Info(notice);
+                if (!_notifiedUpdate)
+                {
+                    _notifiedUpdate = true;
+                    _tray.ShowBalloonTip(8000, "Abaddon RGB", $"Atualização {newVersion} disponível. Abra o programa para instalar.", ToolTipIcon.Info);
+                }
+
+                return;
+            }
+
             if (manual)
             {
                 var answer = MessageBox.Show(this,
@@ -459,6 +482,22 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (!Elevation.IsAdministrator && !ElevatedUpdate.CanWriteNextTo(exe))
+        {
+            // Instalado em Program Files: uma cópia de administrador baixa e instala.
+            if (ElevatedUpdate.Start(exe, tray: !Visible))
+            {
+                _log.Info("Atualização: abrindo como administrador para instalar.");
+                ExitApp();
+            }
+            else
+            {
+                SetStatus("Atualização cancelada: o Windows não recebeu permissão. Tente de novo quando quiser.");
+            }
+
+            return;
+        }
+
         try
         {
             var newVersion = "v" + update.Version.ToString(3);
@@ -483,8 +522,8 @@ internal sealed partial class MainForm : Form
         }
         catch (UnauthorizedAccessException)
         {
-            SetStatus("Não tenho permissão para trocar o arquivo nesta pasta. Mova o AbaddonRGB.exe " +
-                      "para outra pasta (por exemplo, Documentos) e tente de novo.");
+            SetStatus("Não tenho permissão para trocar o arquivo nesta pasta. Abra o Abaddon RGB como administrador " +
+                      "e clique em Procurar atualização.");
         }
         catch (Exception ex)
         {
