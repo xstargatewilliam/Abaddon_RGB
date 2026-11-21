@@ -190,6 +190,118 @@ using (var controller = new LightingController(limitConfig, new ILightingEngine[
         $"Direct Apply calls respect the board limit ({watch.ElapsedMilliseconds} ms for 2 sends)");
 }
 
+// ---- Configurações mudando enquanto quadros são calculados e salvos (como a interface faz)
+var cfgRace = new AppConfig { Color = "#102030", GammaCorrection = false };
+var cfgEngine = new StaticEngine("openrgb",
+    new LightDevice("openrgb", 0, "Placa", new[] { new LightZone("A", 2), new LightZone("B", 2) }, 4, "placa", "HID: x"));
+var raceFolder = Path.Combine(Path.GetTempPath(), "abaddon-race-" + Guid.NewGuid().ToString("N"));
+AppConfig.FolderOverride = raceFolder;
+try
+{
+    using var controller = new LightingController(cfgRace, new ILightingEngine[] { cfgEngine }, new AppLog(null));
+    controller.Connect(out _);
+    var stopAt = Environment.TickCount64 + 1200;
+    Exception? raceError = null;
+    var editor = Task.Run(() =>
+    {
+        var n = 0;
+        while (Environment.TickCount64 < stopAt)
+            lock (cfgRace.SyncRoot)
+            {
+                cfgRace.Overrides.RemoveAll(o => o.Zone == "A");
+                cfgRace.Overrides.Add(new TargetColor { Device = "Placa", DeviceId = "placa", Zone = "A", Color = (n++ % 2 == 0) ? "#FF0000" : "#0000FF" });
+                cfgRace.DisabledDeviceIds.Add("outra");
+                cfgRace.DisabledDeviceIds.Remove("outra");
+            }
+    });
+    var renderer = Task.Run(() =>
+    {
+        try
+        {
+            while (Environment.TickCount64 < stopAt)
+            {
+                foreach (var item in controller.Render(null, null))
+                    if (item.Colors is not null && item.Colors.Length != 4) throw new Exception("quadro com tamanho errado");
+                cfgRace.Save();
+            }
+        }
+        catch (Exception ex) { raceError = ex; }
+    });
+    Check(Task.WaitAll(new[] { editor, renderer }, 10000) && raceError is null,
+        "Config edits under SyncRoot never break rendering or saving: " + raceError?.Message);
+}
+finally
+{
+    AppConfig.FolderOverride = null;
+    try { Directory.Delete(raceFolder, true); } catch { }
+}
+
+// ---- "Identificar" pisca sem gravar a cor temporária
+var flashConfig = new AppConfig { Color = "#000000", GammaCorrection = false };
+var flashEngine = new StaticEngine("openrgb", new LightDevice("openrgb", 0, "Peça", new[] { new LightZone("Z", 1) }, 1, "peca", "HID: x"));
+using (var controller = new LightingController(flashConfig, new ILightingEngine[] { flashEngine }, new AppLog(null)))
+{
+    controller.Connect(out _);
+    controller.Flash = new TargetColor { Device = "Peça", DeviceId = "peca", Color = "#FFFFFF" };
+    var lit = controller.Render(null, null).Single().Colors![0];
+    controller.Flash = null;
+    var back = controller.Render(null, null).Single().Colors![0];
+    Check(lit.R == 255 && back.R == 0 && flashConfig.Overrides.Count == 0, "Identify flash shows on the device but never enters the config");
+}
+
+// ---- Download da atualização: SHA-256 conferido, arquivo ao lado do .exe, nada sobra se falhar
+var dlFolder = Path.Combine(Path.GetTempPath(), "abaddon-dl-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(dlFolder);
+var fakeExe = new byte[1_200_000];
+fakeExe[0] = (byte)'M';
+fakeExe[1] = (byte)'Z';
+var goodHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fakeExe));
+var listener = new System.Net.HttpListener();
+var port = 18000 + Random.Shared.Next(2000);
+listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+try
+{
+    listener.Start();
+    _ = Task.Run(async () =>
+    {
+        while (listener.IsListening)
+        {
+            System.Net.HttpListenerContext ctx;
+            try { ctx = await listener.GetContextAsync(); } catch { return; }
+            var path = ctx.Request.Url!.AbsolutePath;
+            byte[] body = path switch
+            {
+                "/exe" => fakeExe,
+                "/good.sha256" => System.Text.Encoding.ASCII.GetBytes(goodHash + "  AbaddonRGB.exe"),
+                _ => System.Text.Encoding.ASCII.GetBytes(new string('0', 64)),
+            };
+            ctx.Response.ContentLength64 = body.Length;
+            await ctx.Response.OutputStream.WriteAsync(body);
+            ctx.Response.Close();
+        }
+    });
+
+    var installedExe = Path.Combine(dlFolder, "AbaddonRGB.exe");
+    var ok = await Updater.DownloadAsync(new UpdateInfo(new Version(9, 9, 9), "v9.9.9",
+        $"http://127.0.0.1:{port}/exe", $"http://127.0.0.1:{port}/good.sha256"), installedExe);
+    Check(ok == installedExe + Updater.DownloadSuffix && new FileInfo(ok).Length == fakeExe.Length,
+        "Update is downloaded next to the exe after the SHA-256 matches");
+
+    var failedOk = false;
+    try
+    {
+        await Updater.DownloadAsync(new UpdateInfo(new Version(9, 9, 9), "v9.9.9",
+            $"http://127.0.0.1:{port}/exe", $"http://127.0.0.1:{port}/bad.sha256"), installedExe);
+    }
+    catch (InvalidDataException) { failedOk = true; }
+    Check(failedOk && !File.Exists(installedExe + Updater.DownloadSuffix), "Wrong SHA-256 is rejected and leaves no file behind");
+}
+finally
+{
+    listener.Close();
+    try { Directory.Delete(dlFolder, true); } catch { }
+}
+
 // ---- Limites de envio por capacidade, não por nome
 LightDevice Dev(string engine, string name, string location) =>
     new(engine, 0, name, Array.Empty<LightZone>(), 1, name, location);
@@ -252,7 +364,7 @@ try
     for (var i = 0; i < 5; i++)
     {
         Check(UpdateGuard.OnStartup(configFolder, exe, out _) == UpdateGuard.StartDecision.Trial, "Normal close does not count as failure");
-        UpdateGuard.MarkCleanExit(configFolder);
+        UpdateGuard.MarkCleanExit(configFolder, exe);
     }
     Check(File.ReadAllText(exe) == "nova" && File.Exists(exe + ".old"), "No rollback after normal closes");
 
@@ -260,6 +372,16 @@ try
     File.WriteAllText(exe, "nova");
     Check(!UpdateGuard.TryRestore(exe, exe + ".nao-existe", out _) && File.ReadAllText(exe) == "nova",
         "Failed restore puts the new version back");
+
+    // Marcador de outra cópia (pasta protegida x pasta do usuário) não é apagado nem contado por esta.
+    var otherExe = Path.Combine(configFolder, "outra", "AbaddonRGB.exe");
+    Directory.CreateDirectory(Path.GetDirectoryName(otherExe)!);
+    File.WriteAllText(otherExe, "outra");
+    Check(UpdateGuard.OnStartup(configFolder, otherExe, out _) == UpdateGuard.StartDecision.Normal &&
+          UpdateGuard.PendingFor(configFolder) == exe, "Another copy does not discard this copy's pending update");
+    UpdateGuard.MarkCleanExit(configFolder, otherExe);
+    UpdateGuard.Confirm(configFolder, otherExe);
+    Check(UpdateGuard.PendingFor(configFolder) == exe, "Another copy cannot confirm this copy's update");
 
     UpdateGuard.Confirm(configFolder, exe);
     Check(!File.Exists(exe + ".old") && !File.Exists(UpdateGuard.MarkerPath(configFolder)), "Confirmed update removes the old version");
