@@ -12,14 +12,15 @@ internal static class Program
         var startInTray = HasArg(args, StartupManager.TrayArgument);
         var justUpdated = HasArg(args, UpdatedArgument);
         var justElevated = HasArg(args, Elevation.ElevatedArgument);
+        var installUpdate = HasArg(args, ElevatedUpdate.Argument);
 
         // Só uma cópia do programa aberta por vez. Logo depois de uma atualização,
         // a versão antiga ainda pode estar fechando: espera um pouco por ela.
         using var mutex = new Mutex(initiallyOwned: false, "AbaddonRGB_SingleInstance");
         // O mesmo vale para a cópia aberta como administrador: a anterior está fechando.
-        if (!TryAcquire(mutex, justUpdated || justElevated ? TimeSpan.FromSeconds(20) : TimeSpan.Zero))
+        if (!TryAcquire(mutex, justUpdated || justElevated || installUpdate ? TimeSpan.FromSeconds(20) : TimeSpan.Zero))
         {
-            if (!justUpdated && !justElevated)
+            if (!justUpdated && !justElevated && !installUpdate)
             {
                 MessageBox.Show("O Abaddon RGB já está aberto. Procure o ícone perto do relógio.",
                     "Abaddon RGB", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -33,6 +34,15 @@ internal static class Program
             // A versão anterior (".old") só é apagada depois que esta abrir bem (MainForm confirma).
             // Se esta versão já caiu duas vezes logo ao abrir, a anterior volta para o lugar.
             var exe = Environment.ProcessPath;
+
+            // Cópia aberta como administrador só para instalar a atualização (instalado em Program Files).
+            if (installUpdate && exe is not null)
+            {
+                ApplicationConfiguration.Initialize();
+                ElevatedUpdate.Run(exe, startInTray);
+                return;
+            }
+
             if (exe is not null)
             {
                 string message = "";
