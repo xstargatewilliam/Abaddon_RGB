@@ -97,45 +97,73 @@ public static class Updater
     private static Version Normalize(Version v) =>
         new(Math.Max(v.Major, 0), Math.Max(v.Minor, 0), Math.Max(v.Build, 0));
 
-    /// <summary>Baixa o novo .exe para a pasta temporária e confere se é um executável válido.</summary>
-    public static async Task<string> DownloadAsync(UpdateInfo update, CancellationToken cancellationToken = default)
+    /// <summary>Nome do arquivo baixado, ao lado do .exe atual.</summary>
+    public const string DownloadSuffix = ".download";
+
+    /// <summary>
+    /// Baixa o novo .exe para a mesma pasta do programa e confere o SHA-256 da release.
+    /// </summary>
+    /// <remarks>
+    /// Baixa ao lado do .exe atual, e não na pasta temporária: na cópia de administrador
+    /// (C:\Program Files\AbaddonRGB) só administradores escrevem ali, então nenhum programa comum
+    /// consegue trocar o arquivo entre a conferência do SHA-256 e a instalação. O hash é
+    /// calculado enquanto o arquivo é gravado, com o arquivo aberto só por nós.
+    /// </remarks>
+    public static async Task<string> DownloadAsync(UpdateInfo update, string currentExe, CancellationToken cancellationToken = default)
     {
-        var folder = Path.Combine(Path.GetTempPath(), "AbaddonRGB_update");
-        Directory.CreateDirectory(folder);
-        var target = Path.Combine(folder, $"AbaddonRGB_{update.Version}.exe");
+        if (string.IsNullOrWhiteSpace(update.ChecksumUrl))
+            throw new InvalidDataException("A release não tem checksum SHA-256.");
 
-        using (var response = await Http.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
-        {
-            response.EnsureSuccessStatusCode();
-            await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var output = File.Create(target);
-            await input.CopyToAsync(output, cancellationToken);
-        }
+        var expectedText = (await Http.GetStringAsync(update.ChecksumUrl, cancellationToken)).Trim();
+        var expectedHash = expectedText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? "";
+        if (expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit))
+            throw new InvalidDataException("Checksum SHA-256 inválido na release.");
 
+        var target = currentExe + DownloadSuffix;
         try
         {
+            if (File.Exists(target)) File.Delete(target);
+            using (var response = await Http.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+            {
+                response.EnsureSuccessStatusCode();
+                await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using var sha = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                {
+                    sha.AppendData(buffer, 0, read);
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                }
+
+                await output.FlushAsync(cancellationToken);
+                var actualHash = Convert.ToHexString(sha.GetHashAndReset());
+                if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("SHA-256 do executável não confere com a release.");
+            }
+
             ValidateExecutable(target);
-            if (string.IsNullOrWhiteSpace(update.ChecksumUrl))
-                throw new InvalidDataException("A release não tem checksum SHA-256.");
-
-            var expectedText = (await Http.GetStringAsync(update.ChecksumUrl, cancellationToken)).Trim();
-            var expectedHash = expectedText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault() ?? "";
-            if (expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit))
-                throw new InvalidDataException("Checksum SHA-256 inválido na release.");
-
-            await using var stream = File.OpenRead(target);
-            var actualHash = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken));
-            if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("SHA-256 do executável não confere com a release.");
-
             return target;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            TryDelete(target);
+            throw new UnauthorizedAccessException(
+                "Sem permissão para gravar na pasta do programa. Abra o Abaddon RGB como administrador para atualizar.");
         }
         catch
         {
-            try { File.Delete(target); } catch { }
+            TryDelete(target);
             throw;
         }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch { }
     }
 
     /// <summary>Um .exe do Windows começa com "MZ" e o nosso tem vários megabytes.</summary>
