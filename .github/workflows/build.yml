@@ -46,13 +46,6 @@ jobs:
           $hash = (Get-FileHash publish/AbaddonRGB.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  AbaddonRGB.exe" | Set-Content -Encoding ascii publish/AbaddonRGB.exe.sha256
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AbaddonRGB-win-x64
-          path: |
-            publish/AbaddonRGB.exe
-            publish/AbaddonRGB.exe.sha256
-
       - name: Ler a versão do projeto
         id: version
         shell: pwsh
@@ -61,6 +54,54 @@ jobs:
           $version = @($project.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
           if (-not $version) { throw "Não achei <Version> no AbaddonRGB.csproj" }
           "tag=v$version" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      # Instalador (Inno Setup): instala em C:\Program Files\AbaddonRGB, com atalho e desinstalação.
+      - name: Instalar o Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup não foi instalado" }
+
+      - name: Gerar o instalador AbaddonRGB-Setup.exe
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DMyAppVersion=${{ steps.version.outputs.version }}" installer\AbaddonRGB.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falhou ($LASTEXITCODE)" }
+          $hash = (Get-FileHash publish/AbaddonRGB-Setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AbaddonRGB-Setup.exe" | Set-Content -Encoding ascii publish/AbaddonRGB-Setup.exe.sha256
+
+      # Teste do instalador: instala em silêncio, confere os arquivos e o registro, desinstala.
+      - name: Testar instalação e desinstalação
+        shell: pwsh
+        run: |
+          $setup = Start-Process publish/AbaddonRGB-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=install.log' -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { Get-Content install.log; throw "instalação falhou ($($setup.ExitCode))" }
+          $exe = "$env:ProgramFiles\AbaddonRGB\AbaddonRGB.exe"
+          if (-not (Test-Path $exe)) { throw "AbaddonRGB.exe não foi instalado em $exe" }
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{2EBE7F89-F592-473F-8037-612B97C13BBE}_is1'
+          $entry = Get-ItemProperty $key
+          if ($entry.DisplayVersion -ne '${{ steps.version.outputs.version }}') { throw "versão errada em Aplicativos instalados: $($entry.DisplayVersion)" }
+          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Abaddon RGB.lnk"
+          if (-not (Test-Path $menu)) { throw "atalho do menu Iniciar não foi criado" }
+          $uninstaller = "$env:ProgramFiles\AbaddonRGB\unins000.exe"
+          $remove = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "desinstalação falhou ($($remove.ExitCode))" }
+          Start-Sleep -Seconds 3
+          if (Test-Path $exe) { throw "AbaddonRGB.exe ficou depois da desinstalação" }
+          if (Test-Path $key) { throw "registro ficou em Aplicativos instalados" }
+          if (Test-Path $menu) { throw "atalho ficou no menu Iniciar" }
+          "Instalação e desinstalação ok."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AbaddonRGB-win-x64
+          path: |
+            publish/AbaddonRGB.exe
+            publish/AbaddonRGB.exe.sha256
+            publish/AbaddonRGB-Setup.exe
+            publish/AbaddonRGB-Setup.exe.sha256
 
   # Publicação: separada da compilação, com permissão de escrita só aqui.
   # Num push na main, se ainda não existe release com a versão do .csproj, ela é criada.
@@ -107,6 +148,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Abaddon RGB ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.build.outputs.tag }}
           files: |
+            publish/AbaddonRGB-Setup.exe
+            publish/AbaddonRGB-Setup.exe.sha256
             publish/AbaddonRGB.exe
             publish/AbaddonRGB.exe.sha256
           generate_release_notes: true
