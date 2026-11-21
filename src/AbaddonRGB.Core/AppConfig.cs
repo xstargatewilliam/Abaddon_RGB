@@ -211,7 +211,14 @@ public sealed class AppConfig
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    private readonly object _saveLock = new();
+    /// <summary>
+    /// Trava das configurações. Quem altera listas (cores próprias, correções, peças desativadas...)
+    /// ou lê várias opções que precisam combinar entre si segura esta trava.
+    /// Regra: ela é a última trava. Com ela segura, nunca se pede outra (do controlador ou de um motor),
+    /// então pode ser pega a partir de qualquer lugar sem risco de travamento cruzado.
+    /// </summary>
+    [JsonIgnore]
+    public object SyncRoot { get; } = new();
 
     /// <summary>Cópia do último config.json que abriu sem erro.</summary>
     [JsonIgnore]
@@ -328,7 +335,7 @@ public sealed class AppConfig
 
     public void Save()
     {
-        lock (_saveLock)
+        lock (SyncRoot)
         {
             Normalize();
             Directory.CreateDirectory(Folder);
