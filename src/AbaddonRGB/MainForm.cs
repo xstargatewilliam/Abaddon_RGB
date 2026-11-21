@@ -78,6 +78,7 @@ internal sealed partial class MainForm : Form
             () => _config.Temperature.Enabled ? _temperatureColor : null,
             ShowEffectPreview);
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionEnding += OnSessionEnding;
         _ = ConnectAndApplyAsync(applyAfterConnect: _config.ApplyOnStart);
 
         // Detecta conexões perdidas e dispositivos que voltaram após suspensão
@@ -339,6 +340,17 @@ internal sealed partial class MainForm : Form
         catch { }
     }
 
+    /// <summary>
+    /// Windows desligando ou reiniciando: o processo pode ser encerrado antes de fechar sozinho.
+    /// Isso não é falha da versão nova, então marca como fechamento normal.
+    /// </summary>
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
+    {
+        var exe = Environment.ProcessPath;
+        if (exe is not null) UpdateGuard.MarkCleanExit(AppConfig.Folder, exe);
+        try { _controller.SaveConfig(); } catch { }
+    }
+
     // ---------------------------------------------------------------- log
 
     private void OnLogLine(string line)
@@ -369,7 +381,8 @@ internal sealed partial class MainForm : Form
 
         // Só confirma uma versão que está controlando peças de fato. Sem nenhuma conexão
         // (OpenRGB fechado, por exemplo), espera; a versão anterior continua guardada.
-        var pending = File.Exists(UpdateGuard.MarkerPath(AppConfig.Folder));
+        var pending = UpdateGuard.PendingFor(AppConfig.Folder) is { } pendingExe &&
+                      string.Equals(Path.GetFullPath(pendingExe), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase);
         while (pending && !_exiting && !(_controller.IsConnected && _controller.Devices.Count > 0))
             await Task.Delay(TimeSpan.FromMinutes(1));
         if (_exiting) return;
@@ -452,7 +465,7 @@ internal sealed partial class MainForm : Form
             SetStatus($"Baixando {newVersion}...");
             _log.Info($"Atualizando para {newVersion}.");
 
-            var downloaded = await Updater.DownloadAsync(update);
+            var downloaded = await Updater.DownloadAsync(update, exe);
 
             var arguments = Program.UpdatedArgument + (Visible ? "" : " " + StartupManager.TrayArgument);
             UpdateGuard.BeginUpdate(AppConfig.Folder, exe, VersionText, newVersion);
@@ -601,6 +614,7 @@ internal sealed partial class MainForm : Form
         {
             _exiting = true;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionEnding -= OnSessionEnding;
             _log.LineAdded -= OnLogLine;
             StopAutomations();
             _updateTimer.Dispose();

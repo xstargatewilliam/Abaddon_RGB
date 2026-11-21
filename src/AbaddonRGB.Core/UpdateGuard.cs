@@ -73,12 +73,17 @@ public static class UpdateGuard
         try { pending = JsonSerializer.Deserialize<Pending>(File.ReadAllText(marker)); }
         catch { pending = null; }
 
-        if (pending is null || !string.Equals(Path.GetFullPath(pending.Exe), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase))
+        if (pending is null)
         {
-            // Marcador estragado ou de outro .exe: descarta.
+            // Marcador estragado: descarta.
             TryDelete(marker);
             return StartDecision.Normal;
         }
+
+        // Marcador de outra cópia (ex.: a da pasta protegida, quando esta é a da pasta do usuário):
+        // não é desta abertura e não pode ser apagado por ela.
+        if (!string.Equals(Path.GetFullPath(pending.Exe), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase))
+            return StartDecision.Normal;
 
         // A abertura anterior não chegou a fechar normalmente: foi uma falha.
         if (pending.Running) pending.Failures++;
@@ -103,7 +108,7 @@ public static class UpdateGuard
     }
 
     /// <summary>Chamado quando o programa fecha normalmente: essa abertura não conta como falha.</summary>
-    public static void MarkCleanExit(string folder)
+    public static void MarkCleanExit(string folder, string exe)
     {
         var marker = MarkerPath(folder);
         try
@@ -111,6 +116,7 @@ public static class UpdateGuard
             if (!File.Exists(marker)) return;
             var pending = JsonSerializer.Deserialize<Pending>(File.ReadAllText(marker));
             if (pending is null) return;
+            if (!string.Equals(Path.GetFullPath(pending.Exe), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase)) return;
             pending.Running = false;
             File.WriteAllText(marker, JsonSerializer.Serialize(pending));
         }
@@ -153,9 +159,33 @@ public static class UpdateGuard
     /// <summary>A versão nova ficou aberta o bastante: apaga a anterior e o marcador.</summary>
     public static void Confirm(string folder, string exe)
     {
+        if (PendingFor(folder) is { } other && !string.Equals(Path.GetFullPath(other), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase))
+        {
+            // A atualização pendente é de outra cópia: só limpa as sobras desta.
+            Updater.CleanupOldVersion(exe);
+            TryDelete(exe + Updater.DownloadSuffix);
+            return;
+        }
+
         TryDelete(MarkerPath(folder));
         Updater.CleanupOldVersion(exe);
         TryDelete(exe + ".failed");
+        TryDelete(exe + Updater.DownloadSuffix);
+    }
+
+    /// <summary>Caminho do .exe com atualização pendente, ou null.</summary>
+    public static string? PendingFor(string folder)
+    {
+        try
+        {
+            var marker = MarkerPath(folder);
+            if (!File.Exists(marker)) return null;
+            return JsonSerializer.Deserialize<Pending>(File.ReadAllText(marker))?.Exe;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Abre o .exe restaurado (depois de um RolledBack).</summary>

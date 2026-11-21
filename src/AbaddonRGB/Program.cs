@@ -59,7 +59,7 @@ internal static class Program
                 nativeProbe: NativeProbe.Run));
 
             // Chegou aqui = fechou normalmente (não caiu): não conta como falha da atualização.
-            UpdateGuard.MarkCleanExit(AppConfig.Folder);
+            if (exe is not null) UpdateGuard.MarkCleanExit(AppConfig.Folder, exe);
         }
         finally
         {
